@@ -105,8 +105,7 @@ be revisited as the codebase grows.
       orchestrator config
 - [ ] Permission-eval.sh uses prompt-based JSON extraction -- migrate to
       tool_use for structured output like the daemon's pane evaluator
-- [ ] Non-Claude auto-approve: add configurable safety level (off / notify-only
-      / auto-approve-safe / auto-approve-all)
+- [x] Configurable approval mode: manual / auto / yolo in orchestrator config
 - [ ] Integration tests for permission-eval.sh with mocked curl -- test
       safe/unsafe/API-failure response paths
 

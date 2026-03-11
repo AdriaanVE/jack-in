@@ -2,7 +2,7 @@
 
 import { join } from "@std/path";
 import { shellEscape } from "./agents.ts";
-import { type Config, sessionName } from "./config.ts";
+import { type ApprovalMode, type Config, sessionName } from "./config.ts";
 import * as tmux from "./tmux.ts";
 import * as tq from "./task-queue.ts";
 import { evaluatePane } from "./llm.ts";
@@ -62,7 +62,9 @@ export async function initSignals(base: string): Promise<void> {
     /\/src\/$/,
     "",
   );
-  for (const name of ["stop-hook.sh", "permission-eval.sh"]) {
+  for (
+    const name of ["stop-hook.sh", "permission-eval.sh", "yolo-approve.sh"]
+  ) {
     const src = join(repoRoot, "hooks", name);
     const dst = join(jackopsDir, name);
     await Deno.copyFile(src, dst);
@@ -70,50 +72,69 @@ export async function initSignals(base: string): Promise<void> {
   }
 }
 
-/** Write Claude Code settings with Stop + PermissionRequest hooks. */
+/** Write Claude Code settings with Stop + optional PermissionRequest hooks. */
 export async function writeClaudeSettings(
   worktreePath: string,
   base: string,
   workerName: string,
+  approval: ApprovalMode = "manual",
 ): Promise<void> {
   const settingsDir = join(worktreePath, ".claude");
   await Deno.mkdir(settingsDir, { recursive: true });
   const jackopsDir = join(base, ".jackops");
   const stopHook = join(jackopsDir, "stop-hook.sh");
-  const permEval = join(jackopsDir, "permission-eval.sh");
   const signalDir = join(base, SIGNAL_DIR);
-  const settings = {
-    hooks: {
-      Stop: [
-        {
-          matcher: "*",
-          hooks: [
-            {
-              type: "command",
-              command: `${shellEscape(stopHook)} ${shellEscape(signalDir)} ${
-                shellEscape(workerName)
-              }`,
-            },
-          ],
-        },
-      ],
-      PermissionRequest: [
-        {
-          matcher: "*",
-          hooks: [
-            {
-              type: "command",
-              command: shellEscape(permEval),
-              timeout: 20,
-            },
-          ],
-        },
-      ],
-    },
+
+  // deno-lint-ignore no-explicit-any
+  const hooks: Record<string, any[]> = {
+    Stop: [
+      {
+        matcher: "*",
+        hooks: [
+          {
+            type: "command",
+            command: `${shellEscape(stopHook)} ${shellEscape(signalDir)} ${
+              shellEscape(workerName)
+            }`,
+          },
+        ],
+      },
+    ],
   };
+
+  if (approval === "auto") {
+    const permEval = join(jackopsDir, "permission-eval.sh");
+    hooks.PermissionRequest = [
+      {
+        matcher: "*",
+        hooks: [
+          {
+            type: "command",
+            command: shellEscape(permEval),
+            timeout: 20,
+          },
+        ],
+      },
+    ];
+  } else if (approval === "yolo") {
+    const yoloHook = join(jackopsDir, "yolo-approve.sh");
+    hooks.PermissionRequest = [
+      {
+        matcher: "*",
+        hooks: [
+          {
+            type: "command",
+            command: shellEscape(yoloHook),
+          },
+        ],
+      },
+    ];
+  }
+  // manual: no PermissionRequest hook — normal Claude permission dialog
+
   await Deno.writeTextFile(
     join(settingsDir, "settings.local.json"),
-    JSON.stringify(settings, null, 2) + "\n",
+    JSON.stringify({ hooks }, null, 2) + "\n",
   );
 }
 
@@ -184,6 +205,7 @@ export async function run(opts: DaemonOptions): Promise<void> {
   const { config, base, signal } = opts;
   const session = sessionName(config.project);
   const interval = config.orchestrator.poll_interval;
+  const approval = config.orchestrator.approval;
 
   const workers = new Map<string, WorkerState>();
   for (const w of config.workers) {
@@ -211,7 +233,7 @@ export async function run(opts: DaemonOptions): Promise<void> {
         base,
         `.w-${config.project}-${w.name}`,
       );
-      await writeClaudeSettings(wt, base, w.name);
+      await writeClaudeSettings(wt, base, w.name, approval);
     }
   }
 
@@ -243,11 +265,11 @@ export async function run(opts: DaemonOptions): Promise<void> {
   }
 
   console.log(
-    `Daemon started: ${workers.size} executors, polling every ${interval}ms`,
+    `Daemon started: ${workers.size} executors, polling every ${interval}ms, approval: ${approval}`,
   );
 
   while (!signal.aborted) {
-    await tick(session, base, workers);
+    await tick(session, base, workers, approval);
 
     const c = await tq.counts(base);
     if (c.pending === 0 && c.current === 0) {
@@ -273,6 +295,7 @@ async function tick(
   session: string,
   base: string,
   workers: Map<string, WorkerState>,
+  approval: ApprovalMode,
 ): Promise<void> {
   const now = Date.now();
   const idleWorkers: WorkerState[] = [];
@@ -309,7 +332,7 @@ async function tick(
     ) {
       // Non-Claude worker may be stuck on a permission prompt
       state.lastStallCheck = now;
-      stallChecks.push(checkStalled(session, state, base));
+      stallChecks.push(checkStalled(session, state, base, approval));
     }
   }
 
@@ -379,6 +402,7 @@ async function checkStalled(
   session: string,
   state: WorkerState,
   base: string,
+  approval: ApprovalMode,
 ): Promise<void> {
   const target = `${session}:${state.name}`;
   let paneContent: string;
@@ -388,6 +412,32 @@ async function checkStalled(
     return; // Pane gone or inaccessible
   }
 
+  if (approval === "yolo") {
+    // Approve blindly — send Enter to dismiss any prompt
+    console.log(`[yolo-approve] ${state.name}: sending Enter`);
+    try {
+      await tmux.sendKeys(target, "", true);
+    } catch {
+      // pane may be gone
+    }
+    return;
+  }
+
+  if (approval === "manual") {
+    // Notify only, don't evaluate or approve
+    console.log(`[stall-detected] ${state.name}: may need attention`);
+    try {
+      await tmux.displayMessage(
+        session,
+        `JACKOPS: ${state.name} may be stuck - check manually`,
+      );
+    } catch {
+      // display-message may fail if no client attached
+    }
+    return;
+  }
+
+  // approval === "auto" — LLM evaluation
   console.log(`[stall-check] Evaluating ${state.name} via LLM...`);
 
   let taskSummary = "unknown task";

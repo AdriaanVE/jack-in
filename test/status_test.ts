@@ -18,7 +18,7 @@ const testConfig: Config = {
       role: "executor",
     },
   ],
-  orchestrator: { poll_interval: 5000, max_retries: 2 },
+  orchestrator: { poll_interval: 5000, max_retries: 2, approval: "manual" },
 };
 
 Deno.test("formatStatus shows no active session when empty", () => {

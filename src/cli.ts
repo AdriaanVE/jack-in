@@ -149,7 +149,12 @@ async function up() {
 
     // Write Claude hooks before spawning the agent
     if (w.agent === "claude") {
-      await daemon.writeClaudeSettings(wt, base, w.name);
+      await daemon.writeClaudeSettings(
+        wt,
+        base,
+        w.name,
+        config.orchestrator.approval,
+      );
     }
 
     // Create tmux window and spawn agent

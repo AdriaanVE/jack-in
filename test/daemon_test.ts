@@ -178,6 +178,10 @@ Deno.test("initSignals creates signal directory and copies hooks", async () => {
       join(dir, ".jackops", "permission-eval.sh"),
     );
     assertEquals(permEval.isFile, true);
+    const yoloHook = await Deno.stat(
+      join(dir, ".jackops", "yolo-approve.sh"),
+    );
+    assertEquals(yoloHook.isFile, true);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -185,29 +189,83 @@ Deno.test("initSignals creates signal directory and copies hooks", async () => {
 
 // --- writeClaudeSettings ---
 
-Deno.test("writeClaudeSettings writes settings.local.json with hooks", async () => {
+Deno.test("writeClaudeSettings manual: Stop hook only, no PermissionRequest", async () => {
+  const dir = await makeTempDir();
+  const worktree = join(dir, "worktree");
+  await Deno.mkdir(worktree, { recursive: true });
+  try {
+    await daemon.writeClaudeSettings(worktree, dir, "w1", "manual");
+    const settings = JSON.parse(
+      await Deno.readTextFile(
+        join(worktree, ".claude", "settings.local.json"),
+      ),
+    );
+    assertEquals(settings.hooks.Stop.length, 1);
+    assertStringIncludes(settings.hooks.Stop[0].hooks[0].command, "stop-hook");
+    assertEquals(settings.hooks.PermissionRequest, undefined);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("writeClaudeSettings auto: Stop + PermissionRequest with LLM eval", async () => {
+  const dir = await makeTempDir();
+  const worktree = join(dir, "worktree");
+  await Deno.mkdir(worktree, { recursive: true });
+  try {
+    await daemon.writeClaudeSettings(worktree, dir, "w1", "auto");
+    const settings = JSON.parse(
+      await Deno.readTextFile(
+        join(worktree, ".claude", "settings.local.json"),
+      ),
+    );
+    assertEquals(settings.hooks.Stop.length, 1);
+    assertEquals(settings.hooks.PermissionRequest.length, 1);
+    const permCmd = settings.hooks.PermissionRequest[0].hooks[0].command;
+    assertStringIncludes(permCmd, "permission-eval.sh");
+    assertEquals(settings.hooks.PermissionRequest[0].hooks[0].timeout, 20);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("writeClaudeSettings yolo: Stop + PermissionRequest with yolo hook", async () => {
+  const dir = await makeTempDir();
+  const worktree = join(dir, "worktree");
+  await Deno.mkdir(worktree, { recursive: true });
+  try {
+    await daemon.writeClaudeSettings(worktree, dir, "w1", "yolo");
+    const settings = JSON.parse(
+      await Deno.readTextFile(
+        join(worktree, ".claude", "settings.local.json"),
+      ),
+    );
+    assertEquals(settings.hooks.Stop.length, 1);
+    assertEquals(settings.hooks.PermissionRequest.length, 1);
+    const permCmd = settings.hooks.PermissionRequest[0].hooks[0].command;
+    assertStringIncludes(permCmd, "yolo-approve.sh");
+    // yolo has no timeout
+    assertEquals(
+      settings.hooks.PermissionRequest[0].hooks[0].timeout,
+      undefined,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("writeClaudeSettings defaults to manual", async () => {
   const dir = await makeTempDir();
   const worktree = join(dir, "worktree");
   await Deno.mkdir(worktree, { recursive: true });
   try {
     await daemon.writeClaudeSettings(worktree, dir, "w1");
-    const settingsPath = join(worktree, ".claude", "settings.local.json");
-    const raw = await Deno.readTextFile(settingsPath);
-    const settings = JSON.parse(raw);
-
-    // Stop hook
-    assertEquals(settings.hooks.Stop.length, 1);
-    assertEquals(settings.hooks.Stop[0].matcher, "*");
-    const stopCmd = settings.hooks.Stop[0].hooks[0].command;
-    assertStringIncludes(stopCmd, "stop-hook.sh");
-    assertStringIncludes(stopCmd, "w1");
-
-    // PermissionRequest hook
-    assertEquals(settings.hooks.PermissionRequest.length, 1);
-    assertEquals(settings.hooks.PermissionRequest[0].matcher, "*");
-    const permCmd = settings.hooks.PermissionRequest[0].hooks[0].command;
-    assertStringIncludes(permCmd, "permission-eval.sh");
-    assertEquals(settings.hooks.PermissionRequest[0].hooks[0].timeout, 20);
+    const settings = JSON.parse(
+      await Deno.readTextFile(
+        join(worktree, ".claude", "settings.local.json"),
+      ),
+    );
+    assertEquals(settings.hooks.PermissionRequest, undefined);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -219,15 +277,13 @@ Deno.test("writeClaudeSettings shell-escapes paths with spaces", async () => {
   const worktree = join(base, "worktree");
   await Deno.mkdir(worktree, { recursive: true });
   try {
-    await daemon.writeClaudeSettings(worktree, base, "w1");
+    await daemon.writeClaudeSettings(worktree, base, "w1", "auto");
     const raw = await Deno.readTextFile(
       join(worktree, ".claude", "settings.local.json"),
     );
     const settings = JSON.parse(raw);
     const stopCmd: string = settings.hooks.Stop[0].hooks[0].command;
-    // Shell-escaped paths should be wrapped in single quotes
     assertStringIncludes(stopCmd, "'");
-    // Each path argument should be individually quoted
     assertStringIncludes(
       stopCmd,
       `'${join(base, ".jackops", "stop-hook.sh")}'`,

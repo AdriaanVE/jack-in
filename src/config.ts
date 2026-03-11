@@ -13,9 +13,13 @@ export interface WorkerConfig {
   role: WorkerRole;
 }
 
+export type ApprovalMode = "manual" | "auto" | "yolo";
+export const APPROVAL_MODES: ApprovalMode[] = ["manual", "auto", "yolo"];
+
 export interface OrchestratorConfig {
   poll_interval: number;
   max_retries: number;
+  approval: ApprovalMode;
 }
 
 export interface TaskConfig {
@@ -155,6 +159,7 @@ export async function loadConfig(path: string): Promise<Config> {
   const orchestrator: OrchestratorConfig = {
     poll_interval: 5000,
     max_retries: 2,
+    approval: "manual",
   };
   if (raw.orchestrator && typeof raw.orchestrator === "object") {
     const o = raw.orchestrator as Record<string, unknown>;
@@ -163,6 +168,16 @@ export async function loadConfig(path: string): Promise<Config> {
     }
     if (typeof o.max_retries === "number") {
       orchestrator.max_retries = o.max_retries;
+    }
+    if (typeof o.approval === "string") {
+      if (!APPROVAL_MODES.includes(o.approval as ApprovalMode)) {
+        throw new Error(
+          `Invalid orchestrator 'approval': must be one of: ${
+            APPROVAL_MODES.join(", ")
+          }`,
+        );
+      }
+      orchestrator.approval = o.approval as ApprovalMode;
     }
   }
 
