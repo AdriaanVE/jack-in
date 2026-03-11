@@ -5,6 +5,7 @@ import * as tmux from "./tmux.ts";
 import * as worktree from "./worktree.ts";
 import { shellEscape, spawnCommand } from "./agents.ts";
 import { formatStatus, getStatus } from "./status.ts";
+import * as tq from "./task-queue.ts";
 
 const USAGE = `JACKOPS -- tmux-native multi-agent swarm orchestrator
 
@@ -14,6 +15,9 @@ Usage:
   jackops status                    Show worker status
   jackops send <worker> <message>   Send a message to a worker
   jackops attach <worker>           Switch to a worker's tmux window
+  jackops tasks                     List all tasks
+  jackops tasks add <summary>       Add a task to the queue
+  jackops tasks init                Initialize task queue directories
 `;
 
 async function findConfig(): Promise<string> {
@@ -71,6 +75,14 @@ async function up() {
     await tmux.sendKeys(target, `cd ${shellEscape(wt)} && ${cmd}`);
 
     console.log(`  ${w.name} (${w.agent}) -> ${wt}`);
+  }
+
+  // Seed task queue from config
+  if (config.tasks && config.tasks.length > 0) {
+    const seeded = await tq.seed(base, config.tasks);
+    if (seeded > 0) {
+      console.log(`\nSeeded ${seeded} tasks from config.`);
+    }
   }
 
   console.log(`\nSwarm running in tmux session '${session}'.`);
@@ -202,6 +214,66 @@ async function attach(workerName: string) {
   }
 }
 
+async function tasks(subcommand: string | undefined, args: string[]) {
+  const base = Deno.cwd();
+
+  switch (subcommand) {
+    case "init": {
+      await tq.init(base);
+      console.log("Task queue initialized.");
+      break;
+    }
+    case "add": {
+      if (args.length === 0) {
+        console.error(
+          "Usage: jackops tasks add <summary> [--desc <description>]",
+        );
+        Deno.exit(1);
+      }
+      await tq.init(base); // ensure dirs exist
+      const descIdx = args.indexOf("--desc");
+      let summary: string;
+      let description: string;
+      if (descIdx >= 0) {
+        summary = args.slice(0, descIdx).join(" ");
+        description = args.slice(descIdx + 1).join(" ");
+      } else {
+        summary = args.join(" ");
+        description = summary;
+      }
+      const id = tq.generateId();
+      const task = await tq.create(base, { id, summary, description });
+      console.log(`Created ${task.id}: ${task.summary}`);
+      break;
+    }
+    default: {
+      // List tasks
+      const entries = await tq.list(base);
+      if (entries.length === 0) {
+        console.log("No tasks. Run 'jackops tasks init' to set up the queue.");
+        return;
+      }
+      const c: Record<string, number> = {};
+      for (const e of entries) c[e.state] = (c[e.state] ?? 0) + 1;
+      console.log(
+        `Tasks: ${c.pending ?? 0} pending, ${c.current ?? 0} current, ${
+          c.complete ?? 0
+        } complete, ${c.rejected ?? 0} rejected\n`,
+      );
+      for (const state of tq.TASK_STATES) {
+        const stateEntries = entries.filter((e) => e.state === state);
+        if (stateEntries.length === 0) continue;
+        console.log(`[${state}]`);
+        for (const e of stateEntries) {
+          const assignee = e.task.assignee ? ` (${e.task.assignee})` : "";
+          console.log(`  ${e.task.id}: ${e.task.summary}${assignee}`);
+        }
+      }
+      break;
+    }
+  }
+}
+
 // --- Main ---
 
 async function main() {
@@ -234,6 +306,11 @@ async function main() {
           Deno.exit(1);
         }
         await attach(worker);
+        break;
+      }
+      case "tasks": {
+        const [sub, ...rest] = args;
+        await tasks(sub, rest);
         break;
       }
       default:
