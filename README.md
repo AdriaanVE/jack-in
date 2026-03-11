@@ -26,7 +26,15 @@ workers:
   - name: coder
     agent: codex
     prompt: "read all source files and suggest improvements"
+tasks:
+  - summary: "Document the auth module"
+  - summary: "Refactor database layer"
+    description: "Extract DB queries into a repository pattern"
+    depends_on: ["Document the auth module"]
 ```
+
+Tasks defined in the config are automatically seeded into the queue on
+`jackops up`.
 
 Then:
 
@@ -85,8 +93,8 @@ Optional:
 - **Hooks for Claude, polling for others.** Claude Code hooks (via `--settings`)
   give reliable event-driven detection. Other agents use `tmux capture-pane`
   polling with completion markers.
-- **Filesystem task queue.** `tasks/{pending,current,complete}/` -- simple,
-  debuggable, works across worktrees. Inspired by oompa.
+- **Filesystem task queue.** `tasks/{pending,current,complete,rejected}/` --
+  simple, debuggable, works across worktrees. Inspired by oompa.
 - **Git worktree isolation.** Each worker operates in its own worktree. Merge
   conflicts are resolved at review time, not during work.
 
