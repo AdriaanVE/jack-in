@@ -1,0 +1,8 @@
+{
+  "tasks": {
+    "jackops": "deno run --allow-run --allow-read --allow-write --allow-env src/cli.ts"
+  },
+  "imports": {
+    "@std/yaml": "jsr:@std/yaml@^1"
+  }
+}

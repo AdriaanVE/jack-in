@@ -1,0 +1,12 @@
+project: my-app
+
+workers:
+  - name: backend
+    agent: claude
+    prompt: "Implement the REST API endpoints defined in spec.md. Focus on src/api/."
+  - name: frontend
+    agent: codex
+    prompt: "Build the React components defined in spec.md. Focus on src/components/."
+  - name: tests
+    agent: claude
+    prompt: "Write tests for the API and components. Focus on tests/."
