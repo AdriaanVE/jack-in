@@ -4,8 +4,30 @@ import { loadConfig, sessionName } from "./config.ts";
 import * as tmux from "./tmux.ts";
 import * as worktree from "./worktree.ts";
 import { shellEscape, spawnCommand } from "./agents.ts";
-import { formatStatus, getStatus } from "./status.ts";
+import { formatStatus, getSessionStarted, getStatus } from "./status.ts";
 import * as tq from "./task-queue.ts";
+
+async function prompt(message: string): Promise<string> {
+  const buf = new Uint8Array(4);
+  await Deno.stdout.write(new TextEncoder().encode(message));
+  const n = await Deno.stdin.read(buf);
+  return new TextDecoder().decode(buf.subarray(0, n ?? 0)).trim().toLowerCase();
+}
+
+async function attachSession(session: string): Promise<void> {
+  if (Deno.env.get("TMUX")) {
+    await tmux.selectWindow(session, "dashboard");
+  } else {
+    const cmd = new Deno.Command("tmux", {
+      args: ["attach", "-t", session],
+      stdin: "inherit",
+      stdout: "inherit",
+      stderr: "inherit",
+    });
+    const { code } = await cmd.spawn().status;
+    Deno.exit(code);
+  }
+}
 
 const USAGE = `JACKOPS -- tmux-native multi-agent swarm orchestrator
 
@@ -39,11 +61,54 @@ async function up() {
   const session = sessionName(config.project);
   const base = Deno.cwd();
 
-  if (await tmux.hasSession(session)) {
-    console.error(
-      `Session '${session}' already exists. Run 'jackops down' first.`,
+  const hasSession = await tmux.hasSession(session);
+  const existing = await worktree.list(base);
+  const stale = existing.filter((e) =>
+    worktree.isJackopsWorktree(e, config.project)
+  );
+
+  if (hasSession) {
+    // Session is running -- offer to attach or restart
+    console.log(`Session '${session}' is already running.`);
+    const answer = await prompt(
+      "\n[A]ttach, [R]estart (kill + reset worktrees), [Q]uit? [a/r/Q] ",
     );
-    Deno.exit(1);
+
+    if (answer === "a") {
+      await attachSession(session);
+      return;
+    } else if (answer === "r") {
+      await tmux.killSession(session);
+      console.log(`Killed session '${session}'.`);
+      for (const e of stale) {
+        await worktree.reset(e.path);
+      }
+      if (stale.length > 0) console.log("Worktrees reset.");
+    } else {
+      console.log("Aborted.");
+      Deno.exit(1);
+    }
+  } else if (stale.length > 0) {
+    // No session but leftover worktrees
+    console.log("Existing worktrees found from a previous run:");
+    for (const e of stale) {
+      const n = await worktree.dirtyCount(e.path);
+      const label = n > 0
+        ? `dirty - ${n} uncommitted change${n > 1 ? "s" : ""}`
+        : "clean";
+      console.log(`  ${e.path} (${label})`);
+    }
+    const answer = await prompt(
+      "\n[R]eset worktrees and continue, [A]bort to inspect? [r/A] ",
+    );
+    if (answer !== "r") {
+      console.log("Aborted.");
+      Deno.exit(1);
+    }
+    for (const e of stale) {
+      await worktree.reset(e.path);
+    }
+    console.log("Worktrees reset.\n");
   }
 
   console.log(
@@ -54,18 +119,27 @@ async function up() {
   await tmux.createSession(session);
   await tmux.renameWindow(session, 0, "dashboard");
 
+  const reusable = new Map(
+    stale.map((e) => [e.path.split("/").pop() ?? "", e.path]),
+  );
+
   for (const w of config.workers) {
-    // Create worktree (sequential -- git worktree mutates shared repo metadata)
+    // Reuse reset worktree or create a new one
+    const dirName = worktree.worktreeDir(config.project, w.name);
     let wt: string;
-    try {
-      wt = await worktree.create(base, config.project, w.name);
-    } catch (e) {
-      console.error(
-        `  Failed to create worktree for '${w.name}': ${
-          e instanceof Error ? e.message : e
-        }`,
-      );
-      continue;
+    if (reusable.has(dirName)) {
+      wt = reusable.get(dirName)!;
+    } else {
+      try {
+        wt = await worktree.create(base, config.project, w.name);
+      } catch (e) {
+        console.error(
+          `  Failed to create worktree for '${w.name}': ${
+            e instanceof Error ? e.message : e
+          }`,
+        );
+        continue;
+      }
     }
 
     // Create tmux window and spawn agent
@@ -129,14 +203,9 @@ async function down() {
     console.log(`  ${e.path}`);
   }
 
-  const buf = new Uint8Array(4);
-  await Deno.stdout.write(
-    new TextEncoder().encode("\nRemove worktrees? [y/N] "),
-  );
-  const n = await Deno.stdin.read(buf);
-  const answer = new TextDecoder().decode(buf.subarray(0, n ?? 0)).trim();
+  const answer = await prompt("\nRemove worktrees? [y/N] ");
 
-  if (answer.toLowerCase() === "y") {
+  if (answer === "y") {
     const removed = await worktree.cleanup(
       base,
       project ?? "",
@@ -151,8 +220,11 @@ async function down() {
 async function status() {
   const configPath = await findConfig();
   const config = await loadConfig(configPath);
-  const statuses = await getStatus(config);
-  console.log(formatStatus(config, statuses));
+  const [statuses, started] = await Promise.all([
+    getStatus(config),
+    getSessionStarted(config),
+  ]);
+  console.log(formatStatus(config, statuses, started));
 }
 
 async function send(workerName: string, message: string) {

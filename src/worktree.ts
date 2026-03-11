@@ -104,6 +104,28 @@ export async function list(base: string): Promise<WorktreeInfo[]> {
   return entries;
 }
 
+/** Count uncommitted changes (staged + unstaged + untracked) in a worktree. */
+export async function dirtyCount(path: string): Promise<number> {
+  const { success, stdout } = await git(
+    ["status", "--porcelain"],
+    path,
+  );
+  if (!success) return 0;
+  return stdout.trim() === "" ? 0 : stdout.trim().split("\n").length;
+}
+
+/** Reset a worktree to a clean state (discard all changes and untracked files). */
+export async function reset(path: string): Promise<void> {
+  const checkout = await git(["checkout", "."], path);
+  if (!checkout.success) {
+    throw new Error(`git checkout failed: ${checkout.stderr}`);
+  }
+  const clean = await git(["clean", "-fd"], path);
+  if (!clean.success) {
+    throw new Error(`git clean failed: ${clean.stderr}`);
+  }
+}
+
 export function isJackopsWorktree(
   entry: WorktreeInfo,
   project?: string,
