@@ -112,6 +112,13 @@ export function complete(base: string, taskId: string): Promise<Task> {
   return moveTask(base, taskId, "current", "complete");
 }
 
+/** Unclaim a current task, moving it back to pending. */
+export function unclaim(base: string, taskId: string): Promise<Task> {
+  return moveTask(base, taskId, "current", "pending", {
+    assignee: undefined,
+  });
+}
+
 /** Reject a current task with feedback. Moves current/ -> rejected/. */
 export function reject(
   base: string,

@@ -6,6 +6,7 @@ import * as worktree from "./worktree.ts";
 import { shellEscape, spawnCommand } from "./agents.ts";
 import { formatStatus, getSessionStarted, getStatus } from "./status.ts";
 import * as tq from "./task-queue.ts";
+import * as daemon from "./daemon.ts";
 
 async function prompt(message: string): Promise<string> {
   const buf = new Uint8Array(4);
@@ -37,6 +38,7 @@ Usage:
   jackops status                    Show worker status
   jackops send <worker> <message>   Send a message to a worker
   jackops attach <worker>           Switch to a worker's tmux window
+  jackops daemon                    Start the orchestrator daemon
   jackops tasks                     List all tasks
   jackops tasks add <summary>       Add a task to the queue
   jackops tasks init                Initialize task queue directories
@@ -115,6 +117,9 @@ async function up() {
     `Starting swarm for '${config.project}' with ${config.workers.length} workers...`,
   );
 
+  // Set up signal files and hooks before spawning agents
+  await daemon.initSignals(base);
+
   // Create tmux session (comes with window 0)
   await tmux.createSession(session);
   await tmux.renameWindow(session, 0, "dashboard");
@@ -140,6 +145,11 @@ async function up() {
         );
         continue;
       }
+    }
+
+    // Write Claude hooks before spawning the agent
+    if (w.agent === "claude") {
+      await daemon.writeClaudeSettings(wt, base, w.name);
     }
 
     // Create tmux window and spawn agent
@@ -383,6 +393,23 @@ async function main() {
       case "tasks": {
         const [sub, ...rest] = args;
         await tasks(sub, rest);
+        break;
+      }
+      case "daemon": {
+        const configPath = await findConfig();
+        const config = await loadConfig(configPath);
+        const base = Deno.cwd();
+        const session = sessionName(config.project);
+        if (!(await tmux.hasSession(session))) {
+          console.error(
+            `No active session '${session}'. Run 'jackops up' first.`,
+          );
+          Deno.exit(1);
+        }
+        await tq.init(base);
+        const ac = new AbortController();
+        Deno.addSignalListener("SIGINT", () => ac.abort());
+        await daemon.run({ config, base, signal: ac.signal });
         break;
       }
       default:

@@ -35,15 +35,26 @@ export async function createWindow(
   if (!success) throw new Error(`tmux new-window failed: ${stderr}`);
 }
 
-export async function sendKeys(target: string, text: string): Promise<void> {
-  const { success, stderr } = await run([
-    "send-keys",
-    "-t",
-    target,
-    text,
-    "C-m",
-  ]);
-  if (!success) throw new Error(`tmux send-keys failed: ${stderr}`);
+export async function sendKeys(
+  target: string,
+  text: string,
+  enter = true,
+): Promise<void> {
+  // Send text and Enter as separate calls -- TUI apps (Codex, Gemini) don't
+  // reliably submit when Enter is appended to the same send-keys invocation.
+  if (text) {
+    const { success, stderr } = await run(["send-keys", "-t", target, text]);
+    if (!success) throw new Error(`tmux send-keys failed: ${stderr}`);
+  }
+  if (enter) {
+    const { success, stderr } = await run([
+      "send-keys",
+      "-t",
+      target,
+      "Enter",
+    ]);
+    if (!success) throw new Error(`tmux send-keys (enter) failed: ${stderr}`);
+  }
 }
 
 export async function capturePane(
@@ -131,6 +142,20 @@ export async function selectWindow(
     `${session}:${name}`,
   ]);
   if (!success) throw new Error(`tmux select-window failed: ${stderr}`);
+}
+
+/** Display a message on the tmux status line. */
+export async function displayMessage(
+  session: string,
+  message: string,
+): Promise<void> {
+  const { success, stderr } = await run([
+    "display-message",
+    "-t",
+    session,
+    message,
+  ]);
+  if (!success) throw new Error(`tmux display-message failed: ${stderr}`);
 }
 
 /** Rename the first window (index 0) created with the session. */

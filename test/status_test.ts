@@ -5,9 +5,20 @@ import type { Config } from "../src/config.ts";
 const testConfig: Config = {
   project: "test-app",
   workers: [
-    { name: "backend", agent: "claude", prompt: "do backend" },
-    { name: "frontend", agent: "codex", prompt: "do frontend" },
+    {
+      name: "backend",
+      agent: "claude",
+      prompt: "do backend",
+      role: "executor",
+    },
+    {
+      name: "frontend",
+      agent: "codex",
+      prompt: "do frontend",
+      role: "executor",
+    },
   ],
+  orchestrator: { poll_interval: 5000, max_retries: 2 },
 };
 
 Deno.test("formatStatus shows no active session when empty", () => {

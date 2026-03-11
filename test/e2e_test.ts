@@ -1,4 +1,5 @@
 import { assertEquals } from "@std/assert";
+import { join } from "@std/path";
 import { exec } from "../src/subprocess.ts";
 import * as tmux from "../src/tmux.ts";
 import * as worktree from "../src/worktree.ts";
@@ -115,13 +116,27 @@ Deno.test({
           worktree.isJackopsWorktree(e, PROJECT)
         );
         assertEquals(jtrees.length, 2);
+
+        // Verify signal directory was created
+        const signalDir = join(repo, ".jackops", "signals");
+        const signalStat = await Deno.stat(signalDir);
+        assertEquals(signalStat.isDirectory, true);
+
+        // Verify Claude worker got Stop hook settings
+        const w1Dir = join(repo, `.w-${PROJECT}-worker1`);
+        const settingsPath = join(w1Dir, ".claude", "settings.local.json");
+        const settings = JSON.parse(await Deno.readTextFile(settingsPath));
+        assertEquals(Array.isArray(settings.hooks?.Stop), true);
       });
 
-      await t.step("up fails if session already exists", async () => {
-        const result = await jackops(["up"], repo);
-        assertEquals(result.code, 1);
-        assertEquals(result.stderr.includes("already exists"), true);
-      });
+      await t.step(
+        "up with existing session aborts without stdin",
+        async () => {
+          const result = await jackops(["up"], repo);
+          assertEquals(result.code, 1);
+          assertEquals(result.stdout.includes("already running"), true);
+        },
+      );
 
       await t.step("status shows workers", async () => {
         const result = await jackops(["status"], repo);
