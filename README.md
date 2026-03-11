@@ -35,6 +35,9 @@ jackops up              # spawn workers in tmux + worktrees
 jackops status          # show worker status
 jackops send scout "focus on the auth module"
 jackops attach scout    # switch to worker's tmux window
+jackops tasks           # list all tasks and counts
+jackops tasks init      # create task queue directories
+jackops tasks add "implement auth module"
 jackops down            # kill session and clean worktrees
 ```
 
