@@ -137,12 +137,108 @@ Deno.test("formatTaskPrompt adds signal instruction for non-Claude agents", () =
   assertStringIncludes(result, "touch /base/.jackops/signals/w1.done");
 });
 
-Deno.test("formatTaskPrompt omits signal instruction for Claude", () => {
+Deno.test("formatTaskPrompt adds completion marker for Claude agents", () => {
   const result = daemon.formatTaskPrompt(TASK_FULL, "w1", "claude", "/base");
+  assertStringIncludes(result, "JACKOPS_TASK_COMPLETE:task-001");
+  assertStringIncludes(result, "output exactly this on its own line");
+});
+
+Deno.test("formatTaskPrompt completion marker is per-task", () => {
+  const r1 = daemon.formatTaskPrompt(TASK_FULL, "w1", "claude", "/base");
+  const r2 = daemon.formatTaskPrompt(TASK_MINIMAL, "w1", "claude", "/base");
+  assertStringIncludes(r1, "JACKOPS_TASK_COMPLETE:task-001");
+  assertStringIncludes(r2, "JACKOPS_TASK_COMPLETE:task-002");
+  assertEquals(r1.includes("JACKOPS_TASK_COMPLETE:task-002"), false);
+});
+
+Deno.test("formatTaskPrompt Claude gets marker not touch instruction", () => {
+  const result = daemon.formatTaskPrompt(TASK_FULL, "w1", "claude", "/base");
+  assertStringIncludes(result, "JACKOPS_TASK_COMPLETE:");
+  assertEquals(result.includes("touch /base/.jackops/signals"), false);
+});
+
+Deno.test("formatTaskPrompt non-Claude gets touch not marker", () => {
+  const result = daemon.formatTaskPrompt(TASK_FULL, "w1", "codex", "/base");
+  assertStringIncludes(result, "touch /base/.jackops/signals/w1.done");
+  assertEquals(result.includes("JACKOPS_TASK_COMPLETE:"), false);
+});
+
+// --- completionMarker ---
+
+Deno.test("completionMarker returns prefixed task ID", () => {
   assertEquals(
-    result.includes("IMPORTANT: When you are completely done"),
-    false,
+    daemon.completionMarker("task-001"),
+    "JACKOPS_TASK_COMPLETE:task-001",
   );
+});
+
+Deno.test("completionMarker prefix constant matches", () => {
+  const marker = daemon.completionMarker("abc");
+  assertEquals(marker.startsWith(daemon.COMPLETION_MARKER_PREFIX), true);
+});
+
+// --- currentTaskPath ---
+
+Deno.test("currentTaskPath returns correct path", () => {
+  const p = daemon.currentTaskPath("/project", "worker-1");
+  assertEquals(p, "/project/.jackops/current-task/worker-1");
+});
+
+// --- writeCurrentTask / clearCurrentTask ---
+
+Deno.test("writeCurrentTask writes task ID to file", async () => {
+  const dir = await makeTempDir();
+  try {
+    await daemon.writeCurrentTask(dir, "w1", "task-123");
+    const content = await Deno.readTextFile(
+      daemon.currentTaskPath(dir, "w1"),
+    );
+    assertEquals(content, "task-123");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("writeCurrentTask overwrites previous task ID", async () => {
+  const dir = await makeTempDir();
+  try {
+    await daemon.writeCurrentTask(dir, "w1", "task-001");
+    await daemon.writeCurrentTask(dir, "w1", "task-002");
+    const content = await Deno.readTextFile(
+      daemon.currentTaskPath(dir, "w1"),
+    );
+    assertEquals(content, "task-002");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("clearCurrentTask removes task file", async () => {
+  const dir = await makeTempDir();
+  try {
+    await daemon.writeCurrentTask(dir, "w1", "task-123");
+    await daemon.clearCurrentTask(dir, "w1");
+    let exists = true;
+    try {
+      await Deno.stat(daemon.currentTaskPath(dir, "w1"));
+    } catch (e) {
+      if (e instanceof Deno.errors.NotFound) exists = false;
+      else throw e;
+    }
+    assertEquals(exists, false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("clearCurrentTask is idempotent for missing files", async () => {
+  const dir = await makeTempDir();
+  try {
+    await daemon.clearCurrentTask(dir, "w1");
+    await daemon.clearCurrentTask(dir, "w1");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
 
 // --- writeTaskPrompt ---
@@ -166,14 +262,18 @@ Deno.test("writeTaskPrompt writes prompt file to disk", async () => {
 
 // --- initSignals ---
 
-Deno.test("initSignals creates signal directory and copies hooks", async () => {
+Deno.test("initSignals creates signal directory, current-task dir, and copies hooks", async () => {
   const dir = await makeTempDir();
   try {
     await daemon.initSignals(dir);
     const sigDir = await Deno.stat(join(dir, ".jackops", "signals"));
     assertEquals(sigDir.isDirectory, true);
-    const stopHook = await Deno.stat(join(dir, ".jackops", "stop-hook.sh"));
-    assertEquals(stopHook.isFile, true);
+    const ctDir = await Deno.stat(join(dir, ".jackops", "current-task"));
+    assertEquals(ctDir.isDirectory, true);
+    const stopHookTs = await Deno.stat(join(dir, ".jackops", "stop-hook.ts"));
+    assertEquals(stopHookTs.isFile, true);
+    const stopHookSh = await Deno.stat(join(dir, ".jackops", "stop-hook.sh"));
+    assertEquals(stopHookSh.isFile, true);
     const permEval = await Deno.stat(
       join(dir, ".jackops", "permission-eval.sh"),
     );
@@ -201,7 +301,14 @@ Deno.test("writeClaudeSettings manual: Stop hook only, no PermissionRequest", as
       ),
     );
     assertEquals(settings.hooks.Stop.length, 1);
-    assertStringIncludes(settings.hooks.Stop[0].hooks[0].command, "stop-hook");
+    assertStringIncludes(
+      settings.hooks.Stop[0].hooks[0].command,
+      "stop-hook.ts",
+    );
+    assertStringIncludes(
+      settings.hooks.Stop[0].hooks[0].command,
+      "current-task",
+    );
     assertEquals(settings.hooks.PermissionRequest, undefined);
   } finally {
     await Deno.remove(dir, { recursive: true });
@@ -286,10 +393,14 @@ Deno.test("writeClaudeSettings shell-escapes paths with spaces", async () => {
     assertStringIncludes(stopCmd, "'");
     assertStringIncludes(
       stopCmd,
-      `'${join(base, ".jackops", "stop-hook.sh")}'`,
+      `'${join(base, ".jackops", "stop-hook.ts")}'`,
     );
     assertStringIncludes(stopCmd, `'${join(base, ".jackops", "signals")}'`);
     assertStringIncludes(stopCmd, "'w1'");
+    assertStringIncludes(
+      stopCmd,
+      `'${join(base, ".jackops", "current-task")}'`,
+    );
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

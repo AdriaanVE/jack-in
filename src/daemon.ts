@@ -9,7 +9,12 @@ import { evaluatePane } from "./llm.ts";
 
 const PROMPT_DIR = ".jackops/prompts";
 const SIGNAL_DIR = ".jackops/signals";
+const CURRENT_TASK_DIR = ".jackops/current-task";
 const STALL_TIMEOUT_MS = 60_000;
+// Grace period after task assignment before accepting completion signals.
+// The Claude Stop hook fires on every response turn, so early signals are
+// likely from the previous turn, not actual task completion.
+const MIN_WORK_MS = 10_000;
 
 interface WorkerState {
   name: string;
@@ -57,13 +62,21 @@ export async function initSignals(base: string): Promise<void> {
 
   const jackopsDir = join(base, ".jackops");
 
+  // Ensure current-task directory exists
+  await Deno.mkdir(join(base, CURRENT_TASK_DIR), { recursive: true });
+
   // Copy hook scripts from repo hooks/ directory
   const repoRoot = new URL(".", import.meta.url).pathname.replace(
     /\/src\/$/,
     "",
   );
   for (
-    const name of ["stop-hook.sh", "permission-eval.sh", "yolo-approve.sh"]
+    const name of [
+      "stop-hook.ts",
+      "stop-hook.sh",
+      "permission-eval.sh",
+      "yolo-approve.sh",
+    ]
   ) {
     const src = join(repoRoot, "hooks", name);
     const dst = join(jackopsDir, name);
@@ -82,8 +95,9 @@ export async function writeClaudeSettings(
   const settingsDir = join(worktreePath, ".claude");
   await Deno.mkdir(settingsDir, { recursive: true });
   const jackopsDir = join(base, ".jackops");
-  const stopHook = join(jackopsDir, "stop-hook.sh");
+  const stopHook = join(jackopsDir, "stop-hook.ts");
   const signalDir = join(base, SIGNAL_DIR);
+  const currentTaskDir = join(base, CURRENT_TASK_DIR);
 
   // deno-lint-ignore no-explicit-any
   const hooks: Record<string, any[]> = {
@@ -95,7 +109,7 @@ export async function writeClaudeSettings(
             type: "command",
             command: `${shellEscape(stopHook)} ${shellEscape(signalDir)} ${
               shellEscape(workerName)
-            }`,
+            } ${shellEscape(currentTaskDir)}`,
           },
         ],
       },
@@ -138,6 +152,42 @@ export async function writeClaudeSettings(
   );
 }
 
+// --- Completion marker ---
+
+export const COMPLETION_MARKER_PREFIX = "JACKOPS_TASK_COMPLETE:";
+
+export function completionMarker(taskId: string): string {
+  return `${COMPLETION_MARKER_PREFIX}${taskId}`;
+}
+
+// --- Current-task file helpers ---
+
+export function currentTaskPath(base: string, workerName: string): string {
+  return join(base, CURRENT_TASK_DIR, workerName);
+}
+
+export async function writeCurrentTask(
+  base: string,
+  workerName: string,
+  taskId: string,
+): Promise<void> {
+  const dir = join(base, CURRENT_TASK_DIR);
+  await Deno.mkdir(dir, { recursive: true });
+  await Deno.writeTextFile(currentTaskPath(base, workerName), taskId);
+}
+
+export async function clearCurrentTask(
+  base: string,
+  workerName: string,
+): Promise<void> {
+  try {
+    await Deno.remove(currentTaskPath(base, workerName));
+  } catch (e) {
+    if (e instanceof Deno.errors.NotFound) return;
+    throw e;
+  }
+}
+
 // --- Task prompt ---
 
 export function formatTaskPrompt(
@@ -165,8 +215,16 @@ export function formatTaskPrompt(
     lines.push(`## Feedback from previous review`);
     lines.push(task.feedback);
   }
-  // Non-Claude agents need to signal completion themselves
-  if (agent !== "claude") {
+  if (agent === "claude") {
+    // Claude: completion detected via transcript marker in Stop hook
+    const marker = completionMarker(task.id);
+    lines.push("");
+    lines.push(
+      `IMPORTANT: When you have fully completed this task, output exactly this on its own line as the last line of your final message:`,
+    );
+    lines.push(marker);
+  } else {
+    // Non-Claude agents need to signal completion themselves
     const sig = signalPath(base, workerName);
     lines.push("");
     lines.push(
@@ -245,6 +303,7 @@ export async function run(opts: DaemonOptions): Promise<void> {
       const state = workers.get(task.assignee)!;
       state.currentTask = task.id;
       state.assignedAt = Date.now();
+      await writeCurrentTask(base, task.assignee, task.id);
       console.log(
         `[recover] Re-adopting ${task.id} for ${task.assignee}`,
       );
@@ -305,6 +364,13 @@ async function tick(
     const signaled = await hasSignal(base, state.name);
 
     if (state.currentTask && signaled) {
+      // Ignore early signals — the Stop hook fires on every Claude response
+      // turn, so signals arriving right after assignment are from the previous
+      // turn, not actual task completion.
+      if (state.assignedAt && now - state.assignedAt < MIN_WORK_MS) {
+        await clearSignal(base, state.name);
+        continue;
+      }
       // Worker finished its task
       try {
         await tq.complete(base, state.currentTask);
@@ -316,6 +382,7 @@ async function tick(
           }`,
         );
       }
+      await clearCurrentTask(base, state.name);
       state.currentTask = null;
       state.assignedAt = null;
       state.lastStallCheck = null;
@@ -356,8 +423,9 @@ async function tick(
       continue;
     }
 
-    // Clear signal before sending task
+    // Clear signal before sending task and write current-task file
     await clearSignal(base, state.name);
+    await writeCurrentTask(base, state.name, task.id);
 
     const promptPath = await writeTaskPrompt(
       base,
@@ -381,6 +449,7 @@ async function tick(
       // Unclaim so the task returns to pending for another worker
       try {
         await tq.unclaim(base, task.id);
+        await clearCurrentTask(base, state.name);
       } catch {
         console.error(`[warn] Could not unclaim ${task.id}`);
       }
