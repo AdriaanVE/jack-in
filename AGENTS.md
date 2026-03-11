@@ -51,6 +51,11 @@ alias jackops="deno run --allow-run --allow-read --allow-write --allow-env ~/Cod
 Manual testing from any directory (e.g. `~/Code/tmp`): `jackops tasks init`,
 `jackops tasks add "..."`, `jackops tasks`.
 
+## GitHub
+
+This repo is owned by `AdriaanVE`. If `gh` commands fail with repo access
+errors, run `gh auth switch --user AdriaanVE`.
+
 ## Agent CLI flags
 
 | Agent    | Command                        |
