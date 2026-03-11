@@ -20,12 +20,13 @@ commands.
 ## File layout
 
 ```
-src/cli.ts          Entry point, subcommand dispatch (up/down/status/send/attach)
+src/cli.ts          Entry point, subcommand dispatch (up/down/status/send/attach/tasks)
 src/config.ts       YAML config parser, validation
 src/agents.ts       Agent types, spawn commands, shell escaping
 src/tmux.ts         Typed tmux wrappers (session, window, pane operations)
 src/worktree.ts     Git worktree lifecycle (create, remove, list, cleanup)
 src/status.ts       Worker liveness detection via tmux pane state
+src/task-queue.ts   Filesystem-based task queue (JSON files in tasks/{pending,current,complete,rejected}/)
 src/subprocess.ts   Shared Deno.Command runner
 test/               Unit tests (*_test.ts), integration tests (*_integration_test.ts), e2e (e2e_test.ts)
 ```
@@ -38,6 +39,17 @@ test/               Unit tests (*_test.ts), integration tests (*_integration_tes
 - Test setup helpers (`makeTempGitRepo`) validate git command success
 - `sanitizeResources: false` and `sanitizeOps: false` are set on integration
   tests (subprocess resource leaks)
+
+## Shell alias
+
+A global alias exists in `~/.zshrc`:
+
+```bash
+alias jackops="deno run --allow-run --allow-read --allow-write --allow-env ~/Code/agentic-coding/jackops/src/cli.ts"
+```
+
+Manual testing from any directory (e.g. `~/Code/tmp`): `jackops tasks init`,
+`jackops tasks add "..."`, `jackops tasks`.
 
 ## Agent CLI flags
 

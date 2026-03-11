@@ -107,6 +107,20 @@ export async function listPanes(session: string): Promise<PaneInfo[]> {
   });
 }
 
+/** Get session creation time as a unix epoch (seconds), or null. */
+export async function sessionCreated(name: string): Promise<number | null> {
+  const { success, stdout } = await run([
+    "display-message",
+    "-t",
+    name,
+    "-p",
+    "#{session_created}",
+  ]);
+  if (!success || !stdout) return null;
+  const epoch = parseInt(stdout.trim());
+  return isNaN(epoch) ? null : epoch;
+}
+
 export async function selectWindow(
   session: string,
   name: string,

@@ -9,9 +9,18 @@ export interface WorkerConfig {
   prompt: string;
 }
 
+export interface TaskConfig {
+  summary: string;
+  description?: string;
+  files?: string[];
+  acceptance?: string[];
+  depends_on?: string[];
+}
+
 export interface Config {
   project: string;
   workers: WorkerConfig[];
+  tasks?: TaskConfig[];
 }
 
 const SAFE_NAME = /^[a-zA-Z0-9_-]+$/;
@@ -85,5 +94,40 @@ export async function loadConfig(path: string): Promise<Config> {
     parsed.push({ name, agent, prompt });
   }
 
-  return { project, workers: parsed };
+  const tasks: TaskConfig[] = [];
+  if (raw.tasks) {
+    if (!Array.isArray(raw.tasks)) {
+      throw new Error(`Invalid config: 'tasks' must be an array`);
+    }
+    for (const t of raw.tasks) {
+      if (!t || typeof t !== "object") {
+        throw new Error(`Invalid task entry: expected an object`);
+      }
+      const entry = t as Record<string, unknown>;
+      if (typeof entry.summary !== "string" || !entry.summary) {
+        throw new Error(`Invalid task: 'summary' must be a non-empty string`);
+      }
+      tasks.push({
+        summary: entry.summary,
+        description: typeof entry.description === "string"
+          ? entry.description
+          : undefined,
+        files: Array.isArray(entry.files)
+          ? entry.files.filter((f): f is string => typeof f === "string")
+          : undefined,
+        acceptance: Array.isArray(entry.acceptance)
+          ? entry.acceptance.filter((a): a is string => typeof a === "string")
+          : undefined,
+        depends_on: Array.isArray(entry.depends_on)
+          ? entry.depends_on.filter((d): d is string => typeof d === "string")
+          : undefined,
+      });
+    }
+  }
+
+  return {
+    project,
+    workers: parsed,
+    tasks: tasks.length > 0 ? tasks : undefined,
+  };
 }
