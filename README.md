@@ -130,7 +130,7 @@ Platform TBD (Matrix, Telegram, or Slack).
 
 ## Tech stack
 
-TBD -- likely Node.js or bash. Keeping it minimal.
+Deno (TypeScript, no build step). See [ARCHITECTURE.md](ARCHITECTURE.md) for details.
 
 ## License
 
