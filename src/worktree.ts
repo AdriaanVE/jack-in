@@ -12,7 +12,11 @@ export function worktreeDir(project: string, name: string): string {
   return `${WORKTREE_PREFIX}${project}-${name}`;
 }
 
-export function worktreePath(base: string, project: string, name: string): string {
+export function worktreePath(
+  base: string,
+  project: string,
+  name: string,
+): string {
   return `${base}/${worktreeDir(project, name)}`;
 }
 
@@ -20,7 +24,11 @@ function branchName(project: string, name: string): string {
   return `jackops/${project}/${name}`;
 }
 
-export async function create(base: string, project: string, name: string): Promise<string> {
+export async function create(
+  base: string,
+  project: string,
+  name: string,
+): Promise<string> {
   const wt = worktreePath(base, project, name);
   const branch = branchName(project, name);
   const { success, stderr } = await git(
@@ -31,7 +39,9 @@ export async function create(base: string, project: string, name: string): Promi
     // Branch may already exist from a previous run
     if (stderr.includes("already exists")) {
       const retry = await git(["worktree", "add", wt, branch], base);
-      if (!retry.success) throw new Error(`git worktree add failed: ${retry.stderr}`);
+      if (!retry.success) {
+        throw new Error(`git worktree add failed: ${retry.stderr}`);
+      }
     } else {
       throw new Error(`git worktree add failed: ${stderr}`);
     }
@@ -94,7 +104,10 @@ export async function list(base: string): Promise<WorktreeInfo[]> {
   return entries;
 }
 
-export function isJackopsWorktree(entry: WorktreeInfo, project?: string): boolean {
+export function isJackopsWorktree(
+  entry: WorktreeInfo,
+  project?: string,
+): boolean {
   const dirName = entry.path.split("/").pop() ?? "";
   if (!dirName.startsWith(WORKTREE_PREFIX)) return false;
   if (project) {
@@ -104,7 +117,11 @@ export function isJackopsWorktree(entry: WorktreeInfo, project?: string): boolea
 }
 
 /** Remove jackops worktrees for a project. Uses entry.path directly. */
-export async function cleanup(base: string, project: string, entries?: WorktreeInfo[]): Promise<string[]> {
+export async function cleanup(
+  base: string,
+  project: string,
+  entries?: WorktreeInfo[],
+): Promise<string[]> {
   const all = entries ?? await list(base);
   const removed: string[] = [];
   for (const entry of all) {
@@ -113,7 +130,11 @@ export async function cleanup(base: string, project: string, entries?: WorktreeI
         await removeByPath(entry.path, base);
         removed.push(entry.path);
       } catch (e) {
-        console.error(`  Failed to remove ${entry.path}: ${e instanceof Error ? e.message : e}`);
+        console.error(
+          `  Failed to remove ${entry.path}: ${
+            e instanceof Error ? e.message : e
+          }`,
+        );
       }
     }
   }

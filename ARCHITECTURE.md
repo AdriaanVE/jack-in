@@ -2,15 +2,18 @@
 
 ## Tech stack
 
-**Deno** (TypeScript, no build step, `deno compile` for single-binary distribution).
+**Deno** (TypeScript, no build step, `deno compile` for single-binary
+distribution).
 
 Why Deno:
+
 - Native TypeScript -- no tsc/tsx/tsup pipeline
 - No `node_modules` -- URL imports or `deno.json` import map
 - `Deno.Command` for process spawning (tmux, git, agent CLIs)
 - YAML parser in stdlib (`@std/yaml`)
 - `deno compile` produces a self-contained binary
-- Explicit permissions (`--allow-run`, `--allow-read`, `--allow-write`) -- good hygiene for a tool that spawns arbitrary processes
+- Explicit permissions (`--allow-run`, `--allow-read`, `--allow-write`) -- good
+  hygiene for a tool that spawns arbitrary processes
 
 ## Project structure
 
@@ -67,11 +70,13 @@ worktree.list()                    -> git worktree list --porcelain
 worktree.cleanup()                 -> remove all .w-* worktrees
 ```
 
-Worktrees are named `.w-<worker-name>` and live in the project root. Branches are prefixed `jackops/` to avoid collisions.
+Worktrees are named `.w-<worker-name>` and live in the project root. Branches
+are prefixed `jackops/` to avoid collisions.
 
 ### harnesses/ -- agent communication
 
-Each agent CLI has different capabilities. The harness interface normalizes them:
+Each agent CLI has different capabilities. The harness interface normalizes
+them:
 
 ```typescript
 interface Harness {
@@ -82,7 +87,10 @@ interface Harness {
   send(window: string, message: string): Promise<void>;
 
   // Wait for the agent to finish its current turn
-  waitForCompletion(window: string, signal: AbortSignal): Promise<CompletionEvent>;
+  waitForCompletion(
+    window: string,
+    signal: AbortSignal,
+  ): Promise<CompletionEvent>;
 
   // Read the agent's last response
   readResponse(window: string): Promise<string>;
@@ -90,6 +98,7 @@ interface Harness {
 ```
 
 **Claude Code harness** (event-driven):
+
 - Spawns `claude` with `--settings` pointing to hook config
 - Hooks fire on `Stop`, `PreToolUse/AskUserQuestion`, `Notification`
 - Hooks ping a Unix domain socket (IPC) -- same pattern as jackpoint
@@ -97,8 +106,10 @@ interface Harness {
 - Most reliable harness -- no polling needed
 
 **Codex / Opencode / Gemini harness** (polling-based):
+
 - Spawns agent CLI via `tmux send-keys`
-- Workers are instructed to echo a completion marker (e.g. `JACKOPS_DONE_<task-id>`)
+- Workers are instructed to echo a completion marker (e.g.
+  `JACKOPS_DONE_<task-id>`)
 - `waitForCompletion` polls `tmux capture-pane` for the marker
 - `readResponse` captures pane content between start/end markers
 - Less reliable -- buffer truncation, special chars, timing races
@@ -112,21 +123,23 @@ interface Task {
   id: string;
   summary: string;
   description: string;
-  files?: string[];          // hint: which files are likely involved
-  acceptance?: string[];     // criteria for reviewer to check
-  assignee?: string;         // worker name (set on claim)
-  feedback?: string;         // reviewer feedback (set on rejection)
-  createdBy?: string;        // worker name that created the task
+  files?: string[]; // hint: which files are likely involved
+  acceptance?: string[]; // criteria for reviewer to check
+  assignee?: string; // worker name (set on claim)
+  feedback?: string; // reviewer feedback (set on rejection)
+  createdBy?: string; // worker name that created the task
 }
 ```
 
 Operations are atomic file moves (`Deno.rename`):
+
 - **Claim**: `pending/<id>.json` -> `current/<id>.json` (set assignee)
 - **Complete**: `current/<id>.json` -> `complete/<id>.json`
 - **Reject**: `current/<id>.json` -> `rejected/<id>.json` (set feedback)
 - **Retry**: `rejected/<id>.json` -> `pending/<id>.json`
 
-Race condition on claim: two workers move the same file. One gets `ENOENT`. That worker picks the next task. Simple, no locks needed.
+Race condition on claim: two workers move the same file. One gets `ENOENT`. That
+worker picks the next task. Simple, no locks needed.
 
 ### orchestrator.ts -- main loop
 
@@ -151,20 +164,24 @@ The orchestrator is the brain. It runs as a long-lived Deno process.
 
 ### session-reader.ts -- agent session discovery
 
-Reads past conversations from each agent's disk format. Inspired by unleashd's disk adapter pattern, but simpler -- read-only, no WebSocket, just parse and display.
+Reads past conversations from each agent's disk format. Inspired by unleashd's
+disk adapter pattern, but simpler -- read-only, no WebSocket, just parse and
+display.
 
-| Agent | Format | Path |
-|-------|--------|------|
-| Claude Code | JSONL | `~/.claude/projects/<hash>/*.jsonl` |
-| Codex | JSONL | `~/.codex/sessions/YYYY/MM/DD/*.jsonl` |
-| Opencode | JSON | `~/.local/share/opencode/sessions/*/` |
-| Gemini | JSON | `~/.gemini/tmp/session-*.json` |
+| Agent       | Format | Path                                   |
+| ----------- | ------ | -------------------------------------- |
+| Claude Code | JSONL  | `~/.claude/projects/<hash>/*.jsonl`    |
+| Codex       | JSONL  | `~/.codex/sessions/YYYY/MM/DD/*.jsonl` |
+| Opencode    | JSON   | `~/.local/share/opencode/sessions/*/`  |
+| Gemini      | JSON   | `~/.gemini/tmp/session-*.json`         |
 
-Used by the dashboard to show recent activity and by reviewers to understand worker history.
+Used by the dashboard to show recent activity and by reviewers to understand
+worker history.
 
 ### dashboard.ts -- tmux dashboard
 
-The dashboard is window 0 in the jackops tmux session. It renders a plain-text status view that refreshes on a timer or on events.
+The dashboard is window 0 in the jackops tmux session. It renders a plain-text
+status view that refreshes on a timer or on events.
 
 ```
 JACKOPS -- my-app                              uptime: 12m
@@ -186,32 +203,34 @@ RECENT ACTIVITY
   11:45  planner    created     task-006: Add rate limiting
 ```
 
-Rendered by writing to a temp file and `cat`-ing it in the dashboard tmux window, or by using ANSI escape codes directly via `send-keys`.
+Rendered by writing to a temp file and `cat`-ing it in the dashboard tmux
+window, or by using ANSI escape codes directly via `send-keys`.
 
 ## Data flow
 
 ```
-                    jackops.yaml
-                         |
-                         v
-                   orchestrator
-                   /    |    \
-                  /     |     \
-           planner   executor(s)   reviewer
-              |         |             |
-              v         v             v
-         tasks/     worktree      git diff
-        pending/    send-keys     approve/reject
-                    capture-pane
-                         |
-                         v
-                    tasks/complete/
-                    git merge
+            jackops.yaml
+                 |
+                 v
+           orchestrator
+           /    |    \
+          /     |     \
+   planner   executor(s)   reviewer
+      |         |             |
+      v         v             v
+ tasks/     worktree      git diff
+pending/    send-keys     approve/reject
+            capture-pane
+                 |
+                 v
+            tasks/complete/
+            git merge
 ```
 
 ## IPC protocol (Claude Code hooks)
 
-Same pattern as jackpoint. Claude Code hooks are configured via `--settings` to run a small script that forwards events over a Unix domain socket.
+Same pattern as jackpoint. Claude Code hooks are configured via `--settings` to
+run a small script that forwards events over a Unix domain socket.
 
 ```
 Claude Code  -->  hook script  -->  Unix socket  -->  orchestrator
@@ -220,20 +239,21 @@ Claude Code  -->  hook script  -->  Unix socket  -->  orchestrator
 
 Hook events:
 
-| Event | Meaning |
-|-------|---------|
-| `Stop` | Agent finished its turn, waiting for input |
-| `PreToolUse:AskUserQuestion` | Agent is asking the user a question |
-| `Notification:idle_prompt` | Agent has been idle |
+| Event                        | Meaning                                    |
+| ---------------------------- | ------------------------------------------ |
+| `Stop`                       | Agent finished its turn, waiting for input |
+| `PreToolUse:AskUserQuestion` | Agent is asking the user a question        |
+| `Notification:idle_prompt`   | Agent has been idle                        |
 
-The orchestrator listens on the socket and resolves the corresponding `waitForCompletion` promise.
+The orchestrator listens on the socket and resolves the corresponding
+`waitForCompletion` promise.
 
 ## Configuration
 
 ```yaml
 # jackops.yaml
 project: my-app
-spec: spec.md                    # optional: fed to planner as initial context
+spec: spec.md # optional: fed to planner as initial context
 
 workers:
   - name: planner
@@ -241,7 +261,7 @@ workers:
     model: opus
     role: planner
     count: 1
-    prompt: prompts/planner.md   # optional: custom system prompt
+    prompt: prompts/planner.md # optional: custom system prompt
 
   - name: impl
     agent: codex
@@ -259,6 +279,6 @@ workers:
 
 # Optional: messaging bridge for remote control
 bridge:
-  platform: telegram             # or matrix, slack
+  platform: telegram # or matrix, slack
   config: ~/.jackops/bridge.json
 ```

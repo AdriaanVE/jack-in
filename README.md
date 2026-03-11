@@ -2,11 +2,47 @@
 
 tmux-native multi-agent swarm orchestrator.
 
-Spawns and coordinates AI coding agents (Claude Code, Codex, Opencode, Gemini) across git worktrees. Dashboard, task queue, review cycle, and optional mobile remote control -- all from the terminal.
+Spawns and coordinates AI coding agents (Claude Code, Codex, Opencode, Gemini)
+across git worktrees. Dashboard, task queue, review cycle, and optional mobile
+remote control -- all from the terminal.
 
 ## Why
 
-Existing multi-agent tools either require a web UI (unleashd), are tightly coupled to one framework (pi-mono), or shell out to CLIs without visibility (oompa). JACKOPS stays in tmux where the work happens. You see every agent, can intervene anytime, and mix any CLI agent in the same swarm.
+Existing multi-agent tools either require a web UI (unleashd), are tightly
+coupled to one framework (pi-mono), or shell out to CLIs without visibility
+(oompa). JACKOPS stays in tmux where the work happens. You see every agent, can
+intervene anytime, and mix any CLI agent in the same swarm.
+
+## Usage
+
+Create a `jackops.yaml` in any git repo:
+
+```yaml
+project: my-app
+workers:
+  - name: scout
+    agent: claude
+    prompt: "explore the codebase and describe the architecture"
+  - name: coder
+    agent: codex
+    prompt: "read all source files and suggest improvements"
+```
+
+Then:
+
+```bash
+jackops up              # spawn workers in tmux + worktrees
+jackops status          # show worker status
+jackops send scout "focus on the auth module"
+jackops attach scout    # switch to worker's tmux window
+jackops down            # kill session and clean worktrees
+```
+
+Or attach directly: `tmux attach -t jackops-my-app` and switch windows with
+`Ctrl-b w`.
+
+Requires the agent CLIs to be installed (`claude`, `codex`, `opencode`,
+`gemini`).
 
 ## Architecture
 
@@ -40,17 +76,25 @@ Optional:
 
 ### Key design decisions
 
-- **tmux windows, not panes.** Each worker gets a named tmux window. Scale to 20+ workers without visual clutter. Attach to any worker with a keystroke.
+- **tmux windows, not panes.** Each worker gets a named tmux window. Scale to
+  20+ workers without visual clutter. Attach to any worker with a keystroke.
 - **Agent-agnostic.** Anything with a CLI works. No SDK lock-in.
-- **Hooks for Claude, polling for others.** Claude Code hooks (via `--settings`) give reliable event-driven detection. Other agents use `tmux capture-pane` polling with completion markers.
-- **Filesystem task queue.** `tasks/{pending,current,complete}/` -- simple, debuggable, works across worktrees. Inspired by oompa.
-- **Git worktree isolation.** Each worker operates in its own worktree. Merge conflicts are resolved at review time, not during work.
+- **Hooks for Claude, polling for others.** Claude Code hooks (via `--settings`)
+  give reliable event-driven detection. Other agents use `tmux capture-pane`
+  polling with completion markers.
+- **Filesystem task queue.** `tasks/{pending,current,complete}/` -- simple,
+  debuggable, works across worktrees. Inspired by oompa.
+- **Git worktree isolation.** Each worker operates in its own worktree. Merge
+  conflicts are resolved at review time, not during work.
 
 ## Phases
 
 ### Phase 1: Worker management
 
-Spawn named tmux windows with agents in isolated git worktrees. Send prompts via `tmux send-keys`. Detect completion via Claude Code hooks (IPC socket) or `capture-pane` polling (other agents). Configuration file defines workers, their agent type, and role.
+Spawn named tmux windows with agents in isolated git worktrees. Send prompts via
+`tmux send-keys`. Detect completion via Claude Code hooks (IPC socket) or
+`capture-pane` polling (other agents). Configuration file defines workers, their
+agent type, and role.
 
 ```yaml
 # jackops.yaml
@@ -85,7 +129,8 @@ tasks/
   rejected/    # failed review
 ```
 
-Workers claim tasks by moving files. Planners create tasks. Executors consume them. Simple, no database, inspectable with `ls`.
+Workers claim tasks by moving files. Planners create tasks. Executors consume
+them. Simple, no database, inspectable with `ls`.
 
 ### Phase 3: Review cycle
 
@@ -105,32 +150,52 @@ A tmux dashboard window showing:
 
 Session reader discovers past conversations from agent disk formats:
 
-| Agent | Session path |
-|-------|-------------|
-| Claude Code | `~/.claude/projects/` |
-| Codex | `~/.codex/sessions/` |
-| Opencode | `~/.local/share/opencode/` |
-| Gemini | `~/.gemini/tmp/` |
+| Agent       | Session path               |
+| ----------- | -------------------------- |
+| Claude Code | `~/.claude/projects/`      |
+| Codex       | `~/.codex/sessions/`       |
+| Opencode    | `~/.local/share/opencode/` |
+| Gemini      | `~/.gemini/tmp/`           |
 
 ### Phase 5: Remote control (nice-to-have)
 
-Messaging bridge for mobile notifications and remote input. When a worker needs human input (permission, question, stuck), send a notification. Reply from your phone, message gets injected back via `tmux send-keys`.
+Messaging bridge for mobile notifications and remote input. When a worker needs
+human input (permission, question, stuck), send a notification. Reply from your
+phone, message gets injected back via `tmux send-keys`.
 
 Platform TBD (Matrix, Telegram, or Slack).
 
 ## Reference projects
 
-| Project | What we take from it | Repo |
-|---------|---------------------|------|
-| **oompa** | Task queue pattern, worktree isolation, worker roles (planner/executor/reviewer), swarm lifecycle | [nbardy/oompa](https://github.com/nbardy/oompa) |
-| **unleashd** | Session discovery from disk, multi-provider adapter registry, project-based organization | [nbardy/unleashd](https://github.com/nbardy/unleashd) |
-| **jackpoint** | Claude Code hooks for event detection, Unix socket IPC, `tmux send-keys` input injection, messaging bridge pattern | [artpi/jackpoint](https://github.com/artpi/jackpoint) |
-| **pi-mono** | Clean agent SDK design, AGENTS.md conventions, multi-provider model abstraction | [badlogic/pi-mono](https://github.com/badlogic/pi-mono) |
-| **orchestrate skill** | Basic tmux impl-review loop, temp file passing between agents, DONE-marker polling | Personal skill |
+| Project               | What we take from it                                                                                                             | Repo                                                    |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| **oompa**             | Task queue pattern, worktree isolation, worker roles (planner/executor/reviewer), swarm lifecycle                                | [nbardy/oompa](https://github.com/nbardy/oompa)         |
+| **unleashd**          | Session discovery from disk, multi-provider adapter registry, project-based organization                                         | [nbardy/unleashd](https://github.com/nbardy/unleashd)   |
+| **jackpoint**         | Claude Code hooks for event detection, Unix socket IPC, `tmux send-keys` input injection, messaging bridge pattern               | [artpi/jackpoint](https://github.com/artpi/jackpoint)   |
+| **pi-mono**           | Clean agent SDK design, AGENTS.md conventions, multi-provider model abstraction                                                  | [badlogic/pi-mono](https://github.com/badlogic/pi-mono) |
+| **agentsview**        | Local-first session viewer with SQLite FTS5, analytics dashboard, multi-agent session discovery, Svelte 5 SPA, Tauri desktop app | [wesm/agentsview](https://github.com/wesm/agentsview)   |
+| **orchestrate skill** | Basic tmux impl-review loop, temp file passing between agents, DONE-marker polling                                               | Personal skill                                          |
 
-## Tech stack
+## Development
 
-Deno (TypeScript, no build step). See [ARCHITECTURE.md](ARCHITECTURE.md) for details.
+Requires [Deno](https://deno.land/) and [tmux](https://github.com/tmux/tmux).
+See [ARCHITECTURE.md](ARCHITECTURE.md) for internals.
+
+```bash
+deno task jackops           # run CLI
+deno task test              # all tests
+deno task test:unit         # fast unit tests only
+deno task test:integration  # tmux/worktree/e2e tests (requires tmux)
+deno fmt                    # format
+deno lint                   # lint
+```
+
+Pre-commit hooks (format, lint, unit tests) are set up via
+[pre-commit](https://pre-commit.com/). After cloning:
+
+```bash
+pre-commit install
+```
 
 ## License
 

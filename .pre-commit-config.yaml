@@ -1,0 +1,21 @@
+repos:
+  - repo: local
+    hooks:
+      - id: deno-fmt
+        name: deno fmt
+        entry: deno fmt --check
+        language: system
+        types_or: [ts, json, markdown]
+        pass_filenames: false
+      - id: deno-lint
+        name: deno lint
+        entry: deno lint
+        language: system
+        types: [ts]
+        pass_filenames: false
+      - id: deno-test-unit
+        name: deno test (unit)
+        entry: deno test --allow-read --allow-write test/agents_test.ts test/config_test.ts test/worktree_unit_test.ts test/status_test.ts
+        language: system
+        types: [ts]
+        pass_filenames: false

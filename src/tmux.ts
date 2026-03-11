@@ -36,7 +36,13 @@ export async function createWindow(
 }
 
 export async function sendKeys(target: string, text: string): Promise<void> {
-  const { success, stderr } = await run(["send-keys", "-t", target, text, "C-m"]);
+  const { success, stderr } = await run([
+    "send-keys",
+    "-t",
+    target,
+    text,
+    "C-m",
+  ]);
   if (!success) throw new Error(`tmux send-keys failed: ${stderr}`);
 }
 

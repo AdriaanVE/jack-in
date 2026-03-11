@@ -36,11 +36,15 @@ async function up() {
   const base = Deno.cwd();
 
   if (await tmux.hasSession(session)) {
-    console.error(`Session '${session}' already exists. Run 'jackops down' first.`);
+    console.error(
+      `Session '${session}' already exists. Run 'jackops down' first.`,
+    );
     Deno.exit(1);
   }
 
-  console.log(`Starting swarm for '${config.project}' with ${config.workers.length} workers...`);
+  console.log(
+    `Starting swarm for '${config.project}' with ${config.workers.length} workers...`,
+  );
 
   // Create tmux session (comes with window 0)
   await tmux.createSession(session);
@@ -52,7 +56,11 @@ async function up() {
     try {
       wt = await worktree.create(base, config.project, w.name);
     } catch (e) {
-      console.error(`  Failed to create worktree for '${w.name}': ${e instanceof Error ? e.message : e}`);
+      console.error(
+        `  Failed to create worktree for '${w.name}': ${
+          e instanceof Error ? e.message : e
+        }`,
+      );
       continue;
     }
 
@@ -95,7 +103,9 @@ async function down() {
   }
 
   const entries = await worktree.list(base);
-  const jackopsWorktrees = entries.filter((e) => worktree.isJackopsWorktree(e, project));
+  const jackopsWorktrees = entries.filter((e) =>
+    worktree.isJackopsWorktree(e, project)
+  );
 
   if (jackopsWorktrees.length === 0) {
     console.log("No worktrees to clean up.");
@@ -108,12 +118,18 @@ async function down() {
   }
 
   const buf = new Uint8Array(4);
-  await Deno.stdout.write(new TextEncoder().encode("\nRemove worktrees? [y/N] "));
+  await Deno.stdout.write(
+    new TextEncoder().encode("\nRemove worktrees? [y/N] "),
+  );
   const n = await Deno.stdin.read(buf);
   const answer = new TextDecoder().decode(buf.subarray(0, n ?? 0)).trim();
 
   if (answer.toLowerCase() === "y") {
-    const removed = await worktree.cleanup(base, project ?? "", jackopsWorktrees);
+    const removed = await worktree.cleanup(
+      base,
+      project ?? "",
+      jackopsWorktrees,
+    );
     console.log(`Removed ${removed.length} worktrees.`);
   } else {
     console.log("Worktrees kept.");
@@ -134,7 +150,11 @@ async function send(workerName: string, message: string) {
 
   const worker = config.workers.find((w) => w.name === workerName);
   if (!worker) {
-    console.error(`Unknown worker '${workerName}'. Available: ${config.workers.map((w) => w.name).join(", ")}`);
+    console.error(
+      `Unknown worker '${workerName}'. Available: ${
+        config.workers.map((w) => w.name).join(", ")
+      }`,
+    );
     Deno.exit(1);
   }
 
@@ -154,7 +174,11 @@ async function attach(workerName: string) {
 
   const worker = config.workers.find((w) => w.name === workerName);
   if (!worker) {
-    console.error(`Unknown worker '${workerName}'. Available: ${config.workers.map((w) => w.name).join(", ")}`);
+    console.error(
+      `Unknown worker '${workerName}'. Available: ${
+        config.workers.map((w) => w.name).join(", ")
+      }`,
+    );
     Deno.exit(1);
   }
 

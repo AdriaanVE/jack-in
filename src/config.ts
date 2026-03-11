@@ -69,13 +69,17 @@ export async function loadConfig(path: string): Promise<Config> {
     const agent = entry.agent;
     if (typeof agent !== "string" || !isAgentType(agent)) {
       throw new Error(
-        `Invalid worker '${name}': 'agent' must be one of: ${AGENT_NAMES.join(", ")}`,
+        `Invalid worker '${name}': 'agent' must be one of: ${
+          AGENT_NAMES.join(", ")
+        }`,
       );
     }
 
     const prompt = entry.prompt;
     if (typeof prompt !== "string" || !prompt) {
-      throw new Error(`Invalid worker '${name}': 'prompt' must be a non-empty string`);
+      throw new Error(
+        `Invalid worker '${name}': 'prompt' must be a non-empty string`,
+      );
     }
 
     parsed.push({ name, agent, prompt });

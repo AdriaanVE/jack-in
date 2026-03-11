@@ -54,7 +54,9 @@ export function formatStatus(config: Config, statuses: WorkerStatus[]): string {
 
   for (const s of statuses) {
     lines.push(
-      `  ${s.name.padEnd(nameWidth)}  ${s.agent.padEnd(agentWidth)}  ${s.state.padEnd(7)}  ${s.worktree}`,
+      `  ${s.name.padEnd(nameWidth)}  ${s.agent.padEnd(agentWidth)}  ${
+        s.state.padEnd(7)
+      }  ${s.worktree}`,
     );
   }
 

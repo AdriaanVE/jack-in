@@ -2,7 +2,8 @@
 
 Config-driven parallel agent workers with worktree isolation.
 
-One command to go from a YAML config to a running swarm of agents in tmux, each in its own git worktree.
+One command to go from a YAML config to a running swarm of agents in tmux, each
+in its own git worktree.
 
 ## Commands
 
@@ -40,10 +41,9 @@ Minimal config. Just name, agent, prompt. No roles, models, or counts yet.
 
 1. Read `jackops.yaml` from cwd
 2. Create tmux session `jackops-<project>`
-3. For each worker:
-   a. `git worktree add .w-<name>` (branch: `jackops/<name>`)
-   b. `tmux new-window -t jackops-<project> -n <name>`
-   c. `tmux send-keys` to cd into worktree and start the agent CLI with the prompt
+3. For each worker: a. `git worktree add .w-<name>` (branch: `jackops/<name>`)
+   b. `tmux new-window -t jackops-<project> -n <name>` c. `tmux send-keys` to cd
+   into worktree and start the agent CLI with the prompt
 
 ### `jackops down`
 
@@ -63,7 +63,8 @@ JACKOPS -- my-app
   tests       claude    done     .w-tests
 ```
 
-Worker state comes from checking if the tmux window still has a running agent process. No hook IPC -- just `tmux list-panes` and process status.
+Worker state comes from checking if the tmux window still has a running agent
+process. No hook IPC -- just `tmux list-panes` and process status.
 
 ### `jackops send <worker> <message>`
 
@@ -71,7 +72,8 @@ Worker state comes from checking if the tmux window still has a running agent pr
 tmux send-keys -t "jackops-<project>:<worker>" "<message>" C-m
 ```
 
-For multi-line or complex prompts, write to a temp file and tell the agent to read it.
+For multi-line or complex prompts, write to a temp file and tell the agent to
+read it.
 
 ### `jackops attach <worker>`
 
@@ -87,14 +89,15 @@ tmux attach -t "jackops-<project>" \; select-window -t "<worker>"
 
 ## Agent spawn commands
 
-| Agent | Spawn command |
-|-------|--------------|
-| Claude Code | `claude -p "<prompt>"` |
-| Codex | `codex --quiet "<prompt>"` |
-| Opencode | `opencode run "<prompt>"` |
-| Gemini | `gemini "<prompt>"` |
+| Agent       | Spawn command              |
+| ----------- | -------------------------- |
+| Claude Code | `claude -p "<prompt>"`     |
+| Codex       | `codex --quiet "<prompt>"` |
+| Opencode    | `opencode run "<prompt>"`  |
+| Gemini      | `gemini "<prompt>"`        |
 
-Agents run in one-shot prompt mode where possible. The worker's tmux window stays open after the agent exits so you can inspect output or restart manually.
+Agents run in one-shot prompt mode where possible. The worker's tmux window
+stays open after the agent exits so you can inspect output or restart manually.
 
 ## Project structure
 
