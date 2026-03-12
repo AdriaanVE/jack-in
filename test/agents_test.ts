@@ -1,10 +1,11 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   AGENT_NAMES,
   isAgentType,
   shellEscape,
   spawnCommand,
 } from "../src/agents.ts";
+import { DEFAULT_STARTUP_INSTRUCTIONS } from "../src/config.ts";
 
 Deno.test("shellEscape wraps in single quotes", () => {
   assertEquals(shellEscape("hello"), "'hello'");
@@ -70,4 +71,28 @@ Deno.test("spawnCommand generates correct gemini command", () => {
 Deno.test("spawnCommand escapes prompt with quotes", () => {
   const cmd = spawnCommand("claude", "it's a test");
   assertEquals(cmd, "claude 'it'\\''s a test'");
+});
+
+// --- startup_instructions ---
+
+Deno.test("spawnCommand prepends default startup instructions", () => {
+  const cmd = spawnCommand("claude", "do stuff", DEFAULT_STARTUP_INSTRUCTIONS);
+  assertStringIncludes(cmd, "Read README.md");
+  assertStringIncludes(cmd, "do stuff");
+});
+
+Deno.test("spawnCommand uses codex-specific instructions for codex", () => {
+  const cmd = spawnCommand("codex", "do stuff", DEFAULT_STARTUP_INSTRUCTIONS);
+  assertStringIncludes(cmd, "~/.codex/AGENTS.md");
+  assertStringIncludes(cmd, "do stuff");
+});
+
+Deno.test("spawnCommand skips instructions when null", () => {
+  const cmd = spawnCommand("claude", "do stuff", null);
+  assertEquals(cmd, "claude 'do stuff'");
+});
+
+Deno.test("spawnCommand skips instructions when undefined", () => {
+  const cmd = spawnCommand("claude", "do stuff");
+  assertEquals(cmd, "claude 'do stuff'");
 });
