@@ -35,4 +35,7 @@ jobs:
         with:
           deno-version: v2.x
       - run: sudo apt-get update && sudo apt-get install -y tmux
+      - run: |
+          git config --global user.email "ci@jackops"
+          git config --global user.name "CI"
       - run: deno task test:integration
