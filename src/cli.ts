@@ -1,12 +1,19 @@
 /** JACKOPS CLI entry point. */
 
-import { loadConfig, sessionName } from "./config.ts";
+import { join } from "@std/path";
+import {
+  APPROVAL_MODES,
+  type ApprovalMode,
+  loadConfig,
+  sessionName,
+} from "./config.ts";
 import * as tmux from "./tmux.ts";
 import * as worktree from "./worktree.ts";
 import { shellEscape, spawnCommand } from "./agents.ts";
 import { formatStatus, getSessionStarted, getStatus } from "./status.ts";
 import * as tq from "./task-queue.ts";
 import * as daemon from "./daemon.ts";
+import { setupLogging } from "./log.ts";
 
 async function prompt(message: string): Promise<string> {
   const buf = new Uint8Array(4);
@@ -33,15 +40,24 @@ async function attachSession(session: string): Promise<void> {
 const USAGE = `JACKOPS -- tmux-native multi-agent swarm orchestrator
 
 Usage:
-  jackops up                        Spawn workers in tmux + worktrees
+  jackops up [options]               Spawn workers + start orchestrator daemon
   jackops down                      Kill session and clean up worktrees
   jackops status                    Show worker status
   jackops send <worker> <message>   Send a message to a worker
   jackops attach <worker>           Switch to a worker's tmux window
-  jackops daemon                    Start the orchestrator daemon
+  jackops daemon [options]          Start the orchestrator daemon
   jackops tasks                     List all tasks
   jackops tasks add <summary>       Add a task to the queue
   jackops tasks init                Initialize task queue directories
+
+Options:
+  --no-orchestrator                Skip starting the daemon (manual approval only)
+  --approval <mode>                Override approval mode from config
+
+Approval modes (set via --approval or orchestrator.approval in jackops.yaml):
+  manual   Workers pause on permission prompts (default)
+  auto     LLM evaluates and approves safe operations
+  yolo     All permission prompts auto-approved
 `;
 
 async function findConfig(): Promise<string> {
@@ -57,9 +73,95 @@ async function findConfig(): Promise<string> {
   throw new Error("No jackops.yaml found in current directory");
 }
 
-async function up() {
+function parseApproval(args: string[]): ApprovalMode | undefined {
+  const idx = args.indexOf("--approval");
+  if (idx < 0 || idx + 1 >= args.length) return undefined;
+  const value = args[idx + 1];
+  if (!APPROVAL_MODES.includes(value as ApprovalMode)) {
+    console.error(
+      `Invalid approval mode '${value}'. Must be one of: ${
+        APPROVAL_MODES.join(", ")
+      }`,
+    );
+    Deno.exit(1);
+  }
+  return value as ApprovalMode;
+}
+
+function checkUnknownFlags(args: string[], known: Set<string>): void {
+  for (const arg of args) {
+    if (arg.startsWith("--") && !known.has(arg)) {
+      console.error(`Unknown flag '${arg}'. Run 'jackops --help' for usage.`);
+      Deno.exit(1);
+    }
+  }
+}
+
+// TODO: add env vars for other providers (OpenAI, Azure OpenAI, Google, etc.)
+// TODO: add --env-file <path> option to load env from a file before forwarding
+// TODO: make handling the env vars safe — delete daemon.env on shutdown,
+//       ensure it never appears in logs, tmux scrollback, or LLM eval prompts
+const LLM_ENV_KEYS = [
+  "ANTHROPIC_FOUNDRY_API_KEY",
+  "ANTHROPIC_FOUNDRY_RESOURCE",
+  "ANTHROPIC_DEFAULT_SONNET_MODEL",
+];
+
+/** Write a temporary .env file with LLM credentials (mode 0600). */
+async function writeDaemonEnv(base: string): Promise<string | null> {
+  const lines: string[] = [];
+  for (const key of LLM_ENV_KEYS) {
+    const value = Deno.env.get(key);
+    if (value) lines.push(`${key}=${value}`);
+  }
+  if (lines.length === 0) return null;
+  const dir = join(base, ".jackops");
+  await Deno.mkdir(dir, { recursive: true });
+  const path = join(dir, "daemon.env");
+  await Deno.writeTextFile(path, lines.join("\n") + "\n");
+  await Deno.chmod(path, 0o600);
+  return path;
+}
+
+function daemonCommand(
+  approval?: ApprovalMode,
+  envFile?: string | null,
+): string {
+  const cliPath = new URL(".", import.meta.url).pathname + "cli.ts";
+  const deno = Deno.execPath();
+  const approvalFlag = approval ? ` --approval ${shellEscape(approval)}` : "";
+  const envFlag = envFile ? ` --env-file=${shellEscape(envFile)}` : "";
+  return `${
+    shellEscape(deno)
+  } run${envFlag} --allow-run --allow-read --allow-write --allow-env --allow-net ${
+    shellEscape(cliPath)
+  } daemon${approvalFlag}`;
+}
+
+interface UpOpts {
+  orchestrator: boolean;
+  approval?: ApprovalMode;
+}
+
+async function up(opts: UpOpts = { orchestrator: true }) {
   const configPath = await findConfig();
   const config = await loadConfig(configPath);
+  if (opts.approval) config.orchestrator.approval = opts.approval;
+
+  if (config.orchestrator.approval === "auto") {
+    const missing = ["ANTHROPIC_FOUNDRY_API_KEY", "ANTHROPIC_FOUNDRY_RESOURCE"]
+      .filter((k) => !Deno.env.get(k));
+    if (missing.length > 0) {
+      console.error(
+        `Warning: approval mode 'auto' requires LLM access but ${
+          missing.join(" and ")
+        } not set.`,
+      );
+      console.error(
+        "Stall detection will fail. Source your env file first or switch to --approval manual.",
+      );
+    }
+  }
   const session = sessionName(config.project);
   const base = Deno.cwd();
 
@@ -116,6 +218,9 @@ async function up() {
   console.log(
     `Starting swarm for '${config.project}' with ${config.workers.length} workers...`,
   );
+  console.log(`Config:   ${join(base, configPath)}`);
+  console.log(`Tasks:    ${join(base, ".jackops", "tasks")}`);
+  console.log(`Approval: ${config.orchestrator.approval}`);
 
   // Set up signal files and hooks before spawning agents
   await daemon.initSignals(base);
@@ -127,6 +232,8 @@ async function up() {
   const reusable = new Map(
     stale.map((e) => [e.path.split("/").pop() ?? "", e.path]),
   );
+
+  const nonClaudeTargets: string[] = [];
 
   for (const w of config.workers) {
     // Reuse reset worktree or create a new one
@@ -163,7 +270,23 @@ async function up() {
     const cmd = spawnCommand(w.agent, w.prompt);
     await tmux.sendKeys(target, `cd ${shellEscape(wt)} && ${cmd}`);
 
+    if (w.agent !== "claude") {
+      nonClaudeTargets.push(target);
+    }
+
     console.log(`  ${w.name} (${w.agent}) -> ${wt}`);
+  }
+
+  // Dismiss startup prompts (e.g. Codex trust prompt) for non-Claude agents
+  if (nonClaudeTargets.length > 0) {
+    console.log(
+      "Waiting 3s to dismiss startup prompts for non-Claude agents...",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    await Promise.all(
+      nonClaudeTargets.map((target) => tmux.sendKeys(target, "", true)),
+    );
+    console.log("Startup prompts dismissed.");
   }
 
   // Seed task queue from config
@@ -173,6 +296,18 @@ async function up() {
       console.log(`\nSeeded ${seeded} tasks from config.`);
     }
   }
+
+  if (opts.orchestrator) {
+    const envFile = await writeDaemonEnv(base);
+    if (envFile) {
+      console.log(`Daemon env written to ${envFile}`);
+    }
+    const target = `${session}:dashboard`;
+    await tmux.sendKeys(target, daemonCommand(opts.approval, envFile));
+    console.log(`\nOrchestrator daemon started in dashboard pane.`);
+  }
+
+  await tmux.selectWindow(session, "dashboard");
 
   console.log(`\nSwarm running in tmux session '${session}'.`);
   console.log(`Attach with: tmux attach -t ${session}`);
@@ -235,11 +370,25 @@ async function down() {
 async function status() {
   const configPath = await findConfig();
   const config = await loadConfig(configPath);
-  const [statuses, started] = await Promise.all([
-    getStatus(config),
-    getSessionStarted(config),
-  ]);
-  console.log(formatStatus(config, statuses, started));
+  const base = Deno.cwd();
+  const [{ workers: statuses, daemon }, startedEpoch, tasks] = await Promise
+    .all([
+      getStatus(config),
+      getSessionStarted(config),
+      tq.counts(base),
+    ]);
+  console.log(
+    formatStatus(config, {
+      statuses,
+      startedEpoch,
+      daemon,
+      tasks,
+      autoApprovalModel: config.orchestrator.approval === "auto"
+        ? (Deno.env.get("ANTHROPIC_DEFAULT_SONNET_MODEL") ??
+          "claude-sonnet-4-5")
+        : undefined,
+    }),
+  );
 }
 
 async function send(workerName: string, message: string) {
@@ -368,9 +517,16 @@ async function main() {
 
   try {
     switch (command) {
-      case "up":
-        await up();
+      case "up": {
+        checkUnknownFlags(
+          args,
+          new Set(["--no-orchestrator", "--approval"]),
+        );
+        const orchestrator = !args.includes("--no-orchestrator");
+        const approval = parseApproval(args);
+        await up({ orchestrator, approval });
         break;
+      }
       case "down":
         await down();
         break;
@@ -401,8 +557,11 @@ async function main() {
         break;
       }
       case "daemon": {
+        checkUnknownFlags(args, new Set(["--approval"]));
         const configPath = await findConfig();
         const config = await loadConfig(configPath);
+        const approval = parseApproval(args);
+        if (approval) config.orchestrator.approval = approval;
         const base = Deno.cwd();
         const session = sessionName(config.project);
         if (!(await tmux.hasSession(session))) {
@@ -411,15 +570,19 @@ async function main() {
           );
           Deno.exit(1);
         }
+        const closeLog = await setupLogging(base);
         await tq.init(base);
         const ac = new AbortController();
         Deno.addSignalListener("SIGINT", () => ac.abort());
         await daemon.run({ config, base, signal: ac.signal });
+        closeLog();
         break;
       }
+      case "--help":
+      case "-h":
       default:
         console.log(USAGE);
-        Deno.exit(command ? 1 : 0);
+        Deno.exit(!command || command === "--help" || command === "-h" ? 0 : 1);
     }
   } catch (e) {
     console.error(`Error: ${e instanceof Error ? e.message : e}`);

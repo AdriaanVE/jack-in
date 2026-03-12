@@ -6,6 +6,9 @@ import { type ApprovalMode, type Config, sessionName } from "./config.ts";
 import * as tmux from "./tmux.ts";
 import * as tq from "./task-queue.ts";
 import { evaluatePane } from "./llm.ts";
+import { getJackopsLogger } from "./log.ts";
+
+const log = getJackopsLogger("daemon");
 
 const PROMPT_DIR = ".jackops/prompts";
 const SIGNAL_DIR = ".jackops/signals";
@@ -279,7 +282,7 @@ export async function run(opts: DaemonOptions): Promise<void> {
   }
 
   if (workers.size === 0) {
-    console.error("No executor workers configured. Nothing to orchestrate.");
+    log.error("No executor workers configured. Nothing to orchestrate.");
     return;
   }
 
@@ -304,9 +307,7 @@ export async function run(opts: DaemonOptions): Promise<void> {
       state.currentTask = task.id;
       state.assignedAt = Date.now();
       await writeCurrentTask(base, task.assignee, task.id);
-      console.log(
-        `[recover] Re-adopting ${task.id} for ${task.assignee}`,
-      );
+      log.info`[recover] Re-adopting ${task.id} for ${task.assignee}`;
     }
   }
 
@@ -323,18 +324,19 @@ export async function run(opts: DaemonOptions): Promise<void> {
     }
   }
 
-  console.log(
-    `Daemon started: ${workers.size} executors, polling every ${interval}ms, approval: ${approval}`,
-  );
+  log
+    .info`Daemon started: ${workers.size} executors, polling every ${interval}ms, approval: ${approval}`;
+  log.debug`Workers: ${[...workers.keys()].join(", ")}`;
 
   while (!signal.aborted) {
     await tick(session, base, workers, approval);
 
     const c = await tq.counts(base);
+    log
+      .debug`Tick done. Tasks: ${c.pending} pending, ${c.current} current, ${c.complete} complete, ${c.rejected} rejected`;
     if (c.pending === 0 && c.current === 0) {
-      console.log(
-        `All tasks complete (${c.complete} done, ${c.rejected} rejected).`,
-      );
+      log
+        .info`All tasks complete (${c.complete} done, ${c.rejected} rejected).`;
       break;
     }
 
@@ -347,7 +349,7 @@ export async function run(opts: DaemonOptions): Promise<void> {
     });
   }
 
-  console.log("Daemon stopped.");
+  log.info("Daemon stopped.");
 }
 
 async function tick(
@@ -362,25 +364,29 @@ async function tick(
 
   for (const [, state] of workers) {
     const signaled = await hasSignal(base, state.name);
+    log.debug`${state.name}: task=${
+      state.currentTask ?? "none"
+    } signaled=${signaled}`;
 
     if (state.currentTask && signaled) {
       // Ignore early signals — the Stop hook fires on every Claude response
       // turn, so signals arriving right after assignment are from the previous
       // turn, not actual task completion.
       if (state.assignedAt && now - state.assignedAt < MIN_WORK_MS) {
+        log.debug`${state.name}: ignoring early signal (${
+          now - state.assignedAt
+        }ms < ${MIN_WORK_MS}ms)`;
         await clearSignal(base, state.name);
         continue;
       }
       // Worker finished its task
       try {
         await tq.complete(base, state.currentTask);
-        console.log(`[complete] ${state.name} finished ${state.currentTask}`);
+        log.info`[complete] ${state.name} finished ${state.currentTask}`;
       } catch (e) {
-        console.error(
-          `[warn] Could not complete ${state.currentTask}: ${
-            e instanceof Error ? e.message : e
-          }`,
-        );
+        log.warn`Could not complete ${state.currentTask}: ${
+          e instanceof Error ? e.message : e
+        }`;
       }
       await clearCurrentTask(base, state.name);
       state.currentTask = null;
@@ -398,6 +404,9 @@ async function tick(
       (!state.lastStallCheck || now - state.lastStallCheck > STALL_TIMEOUT_MS)
     ) {
       // Non-Claude worker may be stuck on a permission prompt
+      log.debug`${state.name}: possible stall detected (${
+        now - state.assignedAt
+      }ms since assignment)`;
       state.lastStallCheck = now;
       stallChecks.push(checkStalled(session, state, base, approval));
     }
@@ -441,17 +450,15 @@ async function tick(
         `Read and complete the task described in ${promptPath}`,
       );
     } catch (e) {
-      console.error(
-        `[warn] Failed to send task to ${state.name}: ${
-          e instanceof Error ? e.message : e
-        }`,
-      );
+      log.warn`Failed to send task to ${state.name}: ${
+        e instanceof Error ? e.message : e
+      }`;
       // Unclaim so the task returns to pending for another worker
       try {
         await tq.unclaim(base, task.id);
         await clearCurrentTask(base, state.name);
       } catch {
-        console.error(`[warn] Could not unclaim ${task.id}`);
+        log.warn`Could not unclaim ${task.id}`;
       }
       taskIdx++;
       continue;
@@ -460,7 +467,7 @@ async function tick(
     state.currentTask = task.id;
     state.assignedAt = now;
     state.lastStallCheck = null;
-    console.log(`[assign] ${task.id} -> ${state.name}: ${task.summary}`);
+    log.info`[assign] ${task.id} -> ${state.name}: ${task.summary}`;
     taskIdx++;
   }
 
@@ -483,7 +490,8 @@ async function checkStalled(
 
   if (approval === "yolo") {
     // Approve blindly — send Enter to dismiss any prompt
-    console.log(`[yolo-approve] ${state.name}: sending Enter`);
+    log.info`[yolo-approve] ${state.name}: sending Enter`;
+    log.debug`${state.name}: pane content (last 30 lines):\n${paneContent}`;
     try {
       await tmux.sendKeys(target, "", true);
     } catch {
@@ -494,7 +502,8 @@ async function checkStalled(
 
   if (approval === "manual") {
     // Notify only, don't evaluate or approve
-    console.log(`[stall-detected] ${state.name}: may need attention`);
+    log.info`[stall-detected] ${state.name}: may need attention`;
+    log.debug`${state.name}: pane content (last 30 lines):\n${paneContent}`;
     try {
       await tmux.displayMessage(
         session,
@@ -507,7 +516,8 @@ async function checkStalled(
   }
 
   // approval === "auto" — LLM evaluation
-  console.log(`[stall-check] Evaluating ${state.name} via LLM...`);
+  log.info`[stall-check] Evaluating ${state.name} via LLM...`;
+  log.debug`${state.name}: pane content for LLM eval:\n${paneContent}`;
 
   let taskSummary = "unknown task";
   if (state.currentTask) {
@@ -521,21 +531,19 @@ async function checkStalled(
       taskSummary,
       state.agent,
     );
+    log
+      .debug`${state.name}: LLM eval result: status=${result.status} safe=${result.safe_to_approve} reason=${result.reason}`;
 
     if (result.status === "permission_prompt") {
       if (result.safe_to_approve && result.approval_keystroke) {
-        console.log(
-          `[auto-approve] ${state.name}: ${result.reason}`,
-        );
+        log.info`[auto-approve] ${state.name}: ${result.reason}`;
         if (result.approval_keystroke === "Enter") {
           await tmux.sendKeys(target, "", true);
         } else {
           await tmux.sendKeys(target, result.approval_keystroke);
         }
       } else {
-        console.log(
-          `[needs-attention] ${state.name}: ${result.reason}`,
-        );
+        log.info`[needs-attention] ${state.name}: ${result.reason}`;
         try {
           const msg =
             `JACKOPS: ${state.name} needs approval - ${result.reason}`;
@@ -545,21 +553,20 @@ async function checkStalled(
         }
       }
     } else if (result.status === "error") {
-      console.log(`[error-detected] ${state.name}: ${result.reason}`);
+      log.info`[error-detected] ${state.name}: ${result.reason}`;
       try {
         const msg = `JACKOPS: ${state.name} hit an error - ${result.reason}`;
         await tmux.displayMessage(session, msg);
       } catch {
         // display-message may fail
       }
+    } else {
+      log.debug`${state.name}: LLM says "${result.status}" — no action needed`;
     }
-    // "working" and "idle" — do nothing, let it continue
   } catch (e) {
-    console.error(
-      `[stall-check] LLM evaluation failed for ${state.name}: ${
-        e instanceof Error ? e.message : e
-      }`,
-    );
+    log.error`LLM evaluation failed for ${state.name}: ${
+      e instanceof Error ? e.message : e
+    }`;
   }
 }
 
@@ -574,5 +581,5 @@ function printStatus(workers: Map<string, WorkerState>): void {
     minute: "2-digit",
     second: "2-digit",
   });
-  console.log(`[${now}] ${parts.join("  ")}`);
+  log.debug`[${now}] ${parts.join("  ")}`;
 }
