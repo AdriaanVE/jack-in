@@ -16,6 +16,17 @@ export interface WorkerConfig {
 export type ApprovalMode = "manual" | "auto" | "yolo";
 export const APPROVAL_MODES: ApprovalMode[] = ["manual", "auto", "yolo"];
 
+export interface StartupInstructions {
+  default: string;
+  codex: string;
+}
+
+export const DEFAULT_STARTUP_INSTRUCTIONS: StartupInstructions = {
+  default: "Read README.md if it exists, then follow the instructions below.",
+  codex:
+    "Read ~/.codex/AGENTS.md and README.md if they exist, then follow the instructions below.",
+};
+
 export interface OrchestratorConfig {
   poll_interval: number;
   max_retries: number;
@@ -35,6 +46,7 @@ export interface Config {
   workers: WorkerConfig[];
   tasks?: TaskConfig[];
   orchestrator: OrchestratorConfig;
+  startup_instructions: StartupInstructions | null;
 }
 
 const SAFE_NAME = /^[a-zA-Z0-9_-]+$/;
@@ -181,10 +193,39 @@ export async function loadConfig(path: string): Promise<Config> {
     }
   }
 
+  let startup_instructions: StartupInstructions | null =
+    DEFAULT_STARTUP_INSTRUCTIONS;
+  if (raw.startup_instructions !== undefined) {
+    if (
+      raw.startup_instructions === null || raw.startup_instructions === false
+    ) {
+      startup_instructions = null;
+    } else if (
+      typeof raw.startup_instructions === "object" &&
+      raw.startup_instructions !== null
+    ) {
+      const si = raw.startup_instructions as Record<string, unknown>;
+      startup_instructions = {
+        default: typeof si.default === "string"
+          ? si.default
+          : DEFAULT_STARTUP_INSTRUCTIONS.default,
+        codex: typeof si.codex === "string"
+          ? si.codex
+          : DEFAULT_STARTUP_INSTRUCTIONS.codex,
+      };
+    } else if (typeof raw.startup_instructions === "string") {
+      startup_instructions = {
+        default: raw.startup_instructions,
+        codex: raw.startup_instructions,
+      };
+    }
+  }
+
   return {
     project,
     workers: parsed,
     tasks: tasks.length > 0 ? tasks : undefined,
     orchestrator,
+    startup_instructions,
   };
 }

@@ -218,6 +218,10 @@ export function formatTaskPrompt(
     lines.push(`## Feedback from previous review`);
     lines.push(task.feedback);
   }
+  lines.push("");
+  lines.push(
+    `Do not ask for confirmation before proceeding. Implement the changes directly. Only stop to ask if the task is ambiguous or you would need to make a destructive/irreversible change.`,
+  );
   if (agent === "claude") {
     // Claude: completion detected via transcript marker in Stop hook
     const marker = completionMarker(task.id);
@@ -252,6 +256,47 @@ export async function writeTaskPrompt(
     formatTaskPrompt(task, workerName, agent, base),
   );
   return path;
+}
+
+// --- Task prompt delivery ---
+
+export const MAX_SENDKEYS_BYTES = 3500;
+
+/** Build the message to send to a worker. Inline if small, file path if large. */
+export async function taskMessage(
+  base: string,
+  task: tq.Task,
+  workerName: string,
+  agent: string,
+): Promise<string> {
+  const prompt = formatTaskPrompt(task, workerName, agent, base);
+  if (new TextEncoder().encode(prompt).length <= MAX_SENDKEYS_BYTES) {
+    return prompt;
+  }
+  const promptPath = await writeTaskPrompt(base, task, workerName, agent);
+  return `Read and complete the task described in ${promptPath}`;
+}
+
+// --- Watch for new tasks ---
+
+/** Block until a new file appears in pending/ or the signal is aborted. */
+async function waitForNewTask(
+  base: string,
+  signal: AbortSignal,
+): Promise<void> {
+  const pendingDir = join(base, ".jackops/tasks/pending");
+  const watcher = Deno.watchFs(pendingDir);
+  const onAbort = () => watcher.close();
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    for await (const event of watcher) {
+      if (event.kind === "create" || event.kind === "modify") break;
+    }
+  } catch {
+    // Watcher closed by abort signal
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
 }
 
 // --- Daemon loop ---
@@ -299,7 +344,8 @@ export async function run(opts: DaemonOptions): Promise<void> {
   }
 
   // Reconcile in-flight tasks from a previous daemon run.
-  // Any task in current/ assigned to one of our workers gets re-adopted.
+  // Any task in current/ assigned to one of our workers gets re-adopted
+  // and the prompt is re-sent (the worker has a fresh session).
   const currentTasks = await tq.list(base, "current");
   for (const { task } of currentTasks) {
     if (task.assignee && workers.has(task.assignee)) {
@@ -307,7 +353,16 @@ export async function run(opts: DaemonOptions): Promise<void> {
       state.currentTask = task.id;
       state.assignedAt = Date.now();
       await writeCurrentTask(base, task.assignee, task.id);
-      log.info`[recover] Re-adopting ${task.id} for ${task.assignee}`;
+      const msg = await taskMessage(base, task, state.name, state.agent);
+      const target = `${session}:${state.name}`;
+      try {
+        await tmux.sendKeys(target, msg);
+        log.info`[recover] Re-sending ${task.id} to ${task.assignee}`;
+      } catch (e) {
+        log.warn`[recover] Failed to re-send ${task.id} to ${task.assignee}: ${
+          e instanceof Error ? e.message : e
+        }`;
+      }
     }
   }
 
@@ -334,10 +389,20 @@ export async function run(opts: DaemonOptions): Promise<void> {
     const c = await tq.counts(base);
     log
       .debug`Tick done. Tasks: ${c.pending} pending, ${c.current} current, ${c.complete} complete, ${c.rejected} rejected`;
+
     if (c.pending === 0 && c.current === 0) {
       log
-        .info`All tasks complete (${c.complete} done, ${c.rejected} rejected).`;
-      break;
+        .info`All tasks complete (${c.complete} done, ${c.rejected} rejected). Watching for new tasks...`;
+      await waitForNewTask(base, signal);
+      if (signal.aborted) break;
+      log.info`New task detected, resuming poll loop.`;
+      // Re-create signal files for idle workers so tick() picks them up
+      for (const [name, state] of workers) {
+        if (state.currentTask === null) {
+          await Deno.writeTextFile(signalPath(base, name), "");
+        }
+      }
+      continue;
     }
 
     await new Promise<void>((resolve) => {
@@ -398,12 +463,11 @@ async function tick(
       idleWorkers.push(state);
     } else if (
       state.currentTask && !signaled &&
-      state.agent !== "claude" &&
       state.assignedAt &&
       now - state.assignedAt > STALL_TIMEOUT_MS &&
       (!state.lastStallCheck || now - state.lastStallCheck > STALL_TIMEOUT_MS)
     ) {
-      // Non-Claude worker may be stuck on a permission prompt
+      // Worker may be stuck on a permission prompt or asking for confirmation
       log.debug`${state.name}: possible stall detected (${
         now - state.assignedAt
       }ms since assignment)`;
@@ -436,19 +500,11 @@ async function tick(
     await clearSignal(base, state.name);
     await writeCurrentTask(base, state.name, task.id);
 
-    const promptPath = await writeTaskPrompt(
-      base,
-      task,
-      state.name,
-      state.agent,
-    );
+    const msg = await taskMessage(base, task, state.name, state.agent);
     const target = `${session}:${state.name}`;
 
     try {
-      await tmux.sendKeys(
-        target,
-        `Read and complete the task described in ${promptPath}`,
-      );
+      await tmux.sendKeys(target, msg);
     } catch (e) {
       log.warn`Failed to send task to ${state.name}: ${
         e instanceof Error ? e.message : e
@@ -532,7 +588,9 @@ async function checkStalled(
       state.agent,
     );
     log
-      .debug`${state.name}: LLM eval result: status=${result.status} safe=${result.safe_to_approve} reason=${result.reason}`;
+      .info`[stall-result] ${state.name}: status=${result.status} safe=${result.safe_to_approve} action=${
+      result.approval_keystroke || result.response_text || "none"
+    } reason=${result.reason}`;
 
     if (result.status === "permission_prompt") {
       if (result.safe_to_approve && result.approval_keystroke) {
@@ -551,6 +609,13 @@ async function checkStalled(
         } catch {
           // display-message may fail if no client attached
         }
+      }
+    } else if (result.status === "waiting_for_input" && result.response_text) {
+      log.info`[auto-respond] ${state.name}: sending "${result.response_text}"`;
+      try {
+        await tmux.sendKeys(target, result.response_text);
+      } catch {
+        // pane may be gone
       }
     } else if (result.status === "error") {
       log.info`[error-detected] ${state.name}: ${result.reason}`;

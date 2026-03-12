@@ -406,6 +406,46 @@ Deno.test("writeClaudeSettings shell-escapes paths with spaces", async () => {
   }
 });
 
+// --- formatTaskPrompt: no-confirmation instruction ---
+
+Deno.test("formatTaskPrompt includes no-confirmation instruction for Claude", () => {
+  const result = daemon.formatTaskPrompt(TASK_FULL, "w1", "claude", "/base");
+  assertStringIncludes(result, "Do not ask for confirmation before proceeding");
+});
+
+Deno.test("formatTaskPrompt includes no-confirmation instruction for non-Claude", () => {
+  const result = daemon.formatTaskPrompt(TASK_FULL, "w1", "codex", "/base");
+  assertStringIncludes(result, "Do not ask for confirmation before proceeding");
+});
+
+// --- taskMessage ---
+
+Deno.test("taskMessage returns inline prompt for small tasks", async () => {
+  const dir = await makeTempDir();
+  try {
+    const msg = await daemon.taskMessage(dir, TASK_MINIMAL, "w1", "claude");
+    assertStringIncludes(msg, "# Task: Fix typo");
+    assertEquals(msg.includes(".jackops/prompts"), false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("taskMessage falls back to file path for large tasks", async () => {
+  const dir = await makeTempDir();
+  try {
+    const largeTask = {
+      ...TASK_FULL,
+      description: "x".repeat(daemon.MAX_SENDKEYS_BYTES),
+    };
+    const msg = await daemon.taskMessage(dir, largeTask, "w1", "claude");
+    assertStringIncludes(msg, "Read and complete the task described in");
+    assertStringIncludes(msg, ".jackops/prompts");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 // --- unclaim (task-queue) ---
 
 Deno.test("unclaim moves claimed task back to pending", async () => {

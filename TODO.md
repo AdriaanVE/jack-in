@@ -95,6 +95,14 @@ be revisited as the codebase grows.
 - [ ] Filesystem `claim()` is not atomic -- two workers polling simultaneously
       could race on the same task. Consider flock or atomic rename strategy.
 
+## Daemon
+
+- [ ] Compare polling vs Deno.watchFs for all daemon reactions (task assignment,
+      completion detection, stall checks) -- currently hybrid: watchFs for idle
+      waiting, polling for active monitoring
+- [ ] Integration tests for daemon idle-watch resume and stall detection
+      auto-respond (waiting_for_input) -- needs tmux + mock LLM endpoint
+
 ## Permission evaluation
 
 - [ ] Make evaluator model configurable in `jackops.yaml` (currently hardcoded

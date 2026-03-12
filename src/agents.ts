@@ -1,5 +1,7 @@
 /** Agent CLI spawn commands. */
 
+import type { StartupInstructions } from "./config.ts";
+
 export type AgentType = "claude" | "codex" | "opencode" | "gemini";
 
 const AGENTS: Record<AgentType, (prompt: string) => string> = {
@@ -15,8 +17,17 @@ export function isAgentType(value: string): value is AgentType {
   return Object.hasOwn(AGENTS, value);
 }
 
-export function spawnCommand(agent: AgentType, prompt: string): string {
-  return AGENTS[agent](prompt);
+export function spawnCommand(
+  agent: AgentType,
+  prompt: string,
+  startup?: StartupInstructions | null,
+): string {
+  let fullPrompt = prompt;
+  if (startup) {
+    const instructions = agent === "codex" ? startup.codex : startup.default;
+    fullPrompt = `${instructions}\n\n${prompt}`;
+  }
+  return AGENTS[agent](fullPrompt);
 }
 
 export function shellEscape(s: string): string {

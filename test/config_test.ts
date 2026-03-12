@@ -1,5 +1,9 @@
 import { assertEquals, assertRejects } from "@std/assert";
-import { loadConfig, sessionName } from "../src/config.ts";
+import {
+  DEFAULT_STARTUP_INSTRUCTIONS,
+  loadConfig,
+  sessionName,
+} from "../src/config.ts";
 
 Deno.test("sessionName prefixes with jackops-", () => {
   assertEquals(sessionName("my-app"), "jackops-my-app");
@@ -171,6 +175,83 @@ workers:
         Error,
         "prompt",
       );
+    },
+  );
+});
+
+// --- startup_instructions ---
+
+Deno.test("loadConfig uses default startup_instructions when not specified", async () => {
+  await withTempConfig(
+    `
+project: my-app
+workers:
+  - name: w1
+    agent: claude
+    prompt: hi
+`,
+    async (path) => {
+      const config = await loadConfig(path);
+      assertEquals(config.startup_instructions, DEFAULT_STARTUP_INSTRUCTIONS);
+    },
+  );
+});
+
+Deno.test("loadConfig sets startup_instructions to null when disabled", async () => {
+  await withTempConfig(
+    `
+project: my-app
+workers:
+  - name: w1
+    agent: claude
+    prompt: hi
+startup_instructions: null
+`,
+    async (path) => {
+      const config = await loadConfig(path);
+      assertEquals(config.startup_instructions, null);
+    },
+  );
+});
+
+Deno.test("loadConfig parses startup_instructions as string", async () => {
+  await withTempConfig(
+    `
+project: my-app
+workers:
+  - name: w1
+    agent: claude
+    prompt: hi
+startup_instructions: "Custom instructions"
+`,
+    async (path) => {
+      const config = await loadConfig(path);
+      assertEquals(config.startup_instructions, {
+        default: "Custom instructions",
+        codex: "Custom instructions",
+      });
+    },
+  );
+});
+
+Deno.test("loadConfig parses startup_instructions as object", async () => {
+  await withTempConfig(
+    `
+project: my-app
+workers:
+  - name: w1
+    agent: claude
+    prompt: hi
+startup_instructions:
+  default: "Read README"
+  codex: "Read AGENTS and README"
+`,
+    async (path) => {
+      const config = await loadConfig(path);
+      assertEquals(config.startup_instructions, {
+        default: "Read README",
+        codex: "Read AGENTS and README",
+      });
     },
   );
 });

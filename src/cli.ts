@@ -267,7 +267,7 @@ async function up(opts: UpOpts = { orchestrator: true }) {
     // Create tmux window and spawn agent
     await tmux.createWindow(session, w.name);
     const target = `${session}:${w.name}`;
-    const cmd = spawnCommand(w.agent, w.prompt);
+    const cmd = spawnCommand(w.agent, w.prompt, config.startup_instructions);
     await tmux.sendKeys(target, `cd ${shellEscape(wt)} && ${cmd}`);
 
     if (w.agent !== "claude") {
