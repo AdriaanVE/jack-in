@@ -120,6 +120,14 @@ be revisited as the codebase grows.
       `deno install jsr:@adriaanve/jackops`
 - [ ] Homebrew tap -- formula pointing at GitHub Release binaries
 
+## Future: Terminal UI
+
+- [ ] Interactive status with live-updating worker states, task progress, and
+      log output in the dashboard tmux pane
+- [ ] Worker selection -- navigate to a worker's tmux window from the TUI
+- [ ] Library: [Im-Beast/deno_tui](https://github.com/Im-Beast/deno_tui) --
+      Deno-native TUI framework with components, input handling, and styling
+
 ## Future: Dashboard (inspired by agentsview)
 
 - [ ] Web UI for viewing active worker sessions, task queue, and activity feed
