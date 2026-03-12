@@ -14,9 +14,15 @@ export interface PermissionDecision {
 }
 
 export interface PaneEvaluation {
-  status: "working" | "permission_prompt" | "error" | "idle";
+  status:
+    | "working"
+    | "permission_prompt"
+    | "waiting_for_input"
+    | "error"
+    | "idle";
   safe_to_approve: boolean;
   approval_keystroke: string;
+  response_text: string;
   reason: string;
 }
 
@@ -58,9 +64,15 @@ const PANE_EVAL_TOOL = {
     properties: {
       status: {
         type: "string",
-        enum: ["working", "permission_prompt", "error", "idle"],
+        enum: [
+          "working",
+          "permission_prompt",
+          "waiting_for_input",
+          "error",
+          "idle",
+        ],
         description:
-          "working = agent is actively processing; permission_prompt = agent is waiting for user approval; error = agent hit an error; idle = agent is at prompt with nothing to do",
+          "working = agent is actively processing; permission_prompt = agent is waiting for user approval of a specific action; waiting_for_input = agent is asking a question or waiting for user to confirm an approach; error = agent hit an error; idle = agent is at prompt with nothing to do",
       },
       safe_to_approve: {
         type: "boolean",
@@ -70,14 +82,25 @@ const PANE_EVAL_TOOL = {
       approval_keystroke: {
         type: "string",
         description:
-          "Keystroke to send to approve the prompt (e.g., 'Enter', 'y', 'Y', '1'). Only relevant when safe_to_approve=true",
+          "Keystroke to send to approve the prompt (e.g., 'Enter', 'y', 'Y', '1'). Only relevant when status=permission_prompt and safe_to_approve=true",
+      },
+      response_text: {
+        type: "string",
+        description:
+          "Text message to send when status=waiting_for_input. Should be a short, direct instruction to unblock the agent (e.g., 'yes, proceed', 'go ahead'). Empty string when not applicable.",
       },
       reason: {
         type: "string",
         description: "Brief explanation of the assessment",
       },
     },
-    required: ["status", "safe_to_approve", "approval_keystroke", "reason"],
+    required: [
+      "status",
+      "safe_to_approve",
+      "approval_keystroke",
+      "response_text",
+      "reason",
+    ],
   },
 };
 
@@ -140,7 +163,17 @@ export async function evaluatePane(
   const systemPrompt =
     `You are a security reviewer for an AI coding agent orchestrator.
 You are evaluating terminal output from a ${agentType} coding agent that was assigned a task.
-Determine the agent's current state and whether any permission prompt can be safely auto-approved.
+Determine the agent's current state and what action to take.
+
+Statuses:
+- working: agent is actively processing, no action needed
+- permission_prompt: agent is waiting for approval of a specific action (tool use, file access, shell command)
+- waiting_for_input: agent asked a question or is waiting for confirmation to proceed with an approach
+- error: agent hit an error
+- idle: agent is at prompt with nothing to do
+
+For permission_prompt: evaluate safety and provide approval_keystroke if safe.
+For waiting_for_input: provide a short response_text to unblock the agent (e.g., "yes, proceed", "go ahead with that approach").
 
 Safety rules:
 - File reads, writes, and non-destructive shell commands are SAFE to approve
@@ -167,6 +200,7 @@ ${paneContent}
   const VALID_STATUSES = new Set([
     "working",
     "permission_prompt",
+    "waiting_for_input",
     "error",
     "idle",
   ]);
@@ -178,6 +212,7 @@ ${paneContent}
       : "working",
     safe_to_approve: result.safe_to_approve === true,
     approval_keystroke: (result.approval_keystroke as string) ?? "",
+    response_text: (result.response_text as string) ?? "",
     reason: (result.reason as string) ?? "",
   };
 }
