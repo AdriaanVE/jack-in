@@ -9,11 +9,12 @@ import {
 } from "./config.ts";
 import * as tmux from "./tmux.ts";
 import * as worktree from "./worktree.ts";
-import { shellEscape, spawnCommand } from "./agents.ts";
+import { isAgentType, shellEscape, spawnCommand } from "./agents.ts";
 import { formatStatus, getSessionStarted, getStatus } from "./status.ts";
 import * as tq from "./task-queue.ts";
 import * as daemon from "./daemon.ts";
 import { setupLogging } from "./log.ts";
+import { init, initTemplate } from "./init.ts";
 
 async function prompt(message: string): Promise<string> {
   const buf = new Uint8Array(4);
@@ -40,6 +41,7 @@ async function attachSession(session: string): Promise<void> {
 const USAGE = `JACKOPS -- tmux-native multi-agent swarm orchestrator
 
 Usage:
+  jackops init [options]             Interactive setup — generate jackops.yaml
   jackops up [options]               Spawn workers + start orchestrator daemon
   jackops down                      Kill session and clean up worktrees
   jackops status                    Show worker status
@@ -53,6 +55,8 @@ Usage:
 Options:
   --no-orchestrator                Skip starting the daemon (manual approval only)
   --approval <mode>                Override approval mode from config
+  --agent <type>                   Agent to use for init (claude|codex|opencode|gemini)
+  --template                       Generate a template config without an LLM
 
 Approval modes (set via --approval or orchestrator.approval in jackops.yaml):
   manual   Workers pause on permission prompts (default)
@@ -517,6 +521,28 @@ async function main() {
 
   try {
     switch (command) {
+      case "init": {
+        checkUnknownFlags(args, new Set(["--agent", "--template"]));
+        if (args.includes("--template")) {
+          await initTemplate();
+        } else {
+          const agentIdx = args.indexOf("--agent");
+          let agent: string | undefined;
+          if (agentIdx >= 0 && agentIdx + 1 < args.length) {
+            agent = args[agentIdx + 1];
+            if (!isAgentType(agent)) {
+              console.error(
+                `Invalid agent '${agent}'. Must be one of: claude, codex, opencode, gemini`,
+              );
+              Deno.exit(1);
+            }
+          }
+          await init({
+            agent: agent as import("./agents.ts").AgentType | undefined,
+          });
+        }
+        break;
+      }
       case "up": {
         checkUnknownFlags(
           args,

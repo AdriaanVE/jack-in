@@ -45,7 +45,7 @@ test/               Unit tests (*_test.ts), integration tests (*_integration_tes
 A global alias exists in `~/.zshrc`:
 
 ```bash
-alias jackops="deno run --allow-run --allow-read --allow-write --allow-env ~/Code/agentic-coding/jackops/src/cli.ts"
+alias jackops="source ~/dotenvs/claude.env && deno run --allow-run --allow-read --allow-write --allow-env --allow-net ~/Code/agentic-coding/jackops/src/cli.ts"
 ```
 
 Manual testing from any directory (e.g. `~/Code/tmp`): `jackops tasks init`,
