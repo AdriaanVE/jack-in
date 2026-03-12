@@ -1,17 +1,47 @@
 import { assertEquals } from "@std/assert";
-import { formatStatus } from "../src/status.ts";
+import { formatStatus, type StatusInfo } from "../src/status.ts";
 import type { Config } from "../src/config.ts";
 
 const testConfig: Config = {
   project: "test-app",
   workers: [
-    { name: "backend", agent: "claude", prompt: "do backend" },
-    { name: "frontend", agent: "codex", prompt: "do frontend" },
+    {
+      name: "backend",
+      agent: "claude",
+      prompt: "do backend",
+      role: "executor",
+    },
+    {
+      name: "frontend",
+      agent: "codex",
+      prompt: "do frontend",
+      role: "executor",
+    },
   ],
+  orchestrator: { poll_interval: 5000, max_retries: 2, approval: "manual" },
 };
 
+const defaultWorker = {
+  name: "backend",
+  agent: "claude",
+  state: "working" as const,
+  worktree: ".w-test-app-backend",
+};
+
+function makeInfo(
+  overrides: Partial<StatusInfo> = {},
+): StatusInfo {
+  return {
+    statuses: [],
+    startedEpoch: null,
+    daemon: { running: false },
+    tasks: null,
+    ...overrides,
+  };
+}
+
 Deno.test("formatStatus shows no active session when empty", () => {
-  const output = formatStatus(testConfig, []);
+  const output = formatStatus(testConfig, makeInfo());
   assertEquals(output.includes("No active session"), true);
   assertEquals(output.includes("test-app"), true);
 });
@@ -21,23 +51,23 @@ Deno.test("formatStatus shows worker statuses", () => {
     {
       name: "backend",
       agent: "claude",
-      state: "running" as const,
+      state: "working" as const,
       worktree: ".w-test-app-backend",
     },
     {
       name: "frontend",
       agent: "codex",
-      state: "idle" as const,
+      state: "waiting" as const,
       worktree: ".w-test-app-frontend",
     },
   ];
-  const output = formatStatus(testConfig, statuses);
+  const output = formatStatus(testConfig, makeInfo({ statuses }));
   assertEquals(output.includes("backend"), true);
   assertEquals(output.includes("claude"), true);
-  assertEquals(output.includes("running"), true);
+  assertEquals(output.includes("working"), true);
   assertEquals(output.includes("frontend"), true);
   assertEquals(output.includes("codex"), true);
-  assertEquals(output.includes("idle"), true);
+  assertEquals(output.includes("waiting"), true);
 });
 
 Deno.test("formatStatus pads columns consistently", () => {
@@ -45,7 +75,7 @@ Deno.test("formatStatus pads columns consistently", () => {
     {
       name: "a",
       agent: "claude",
-      state: "running" as const,
+      state: "working" as const,
       worktree: ".w-test-app-a",
     },
     {
@@ -55,12 +85,110 @@ Deno.test("formatStatus pads columns consistently", () => {
       worktree: ".w-test-app-longname",
     },
   ];
-  const output = formatStatus(testConfig, statuses);
+  const output = formatStatus(testConfig, makeInfo({ statuses }));
   const lines = output.split("\n").filter((l) =>
     l.includes("claude") || l.includes("codex")
   );
-  // Both agent names should start at the same column
   const claudeIdx = lines[0].indexOf("claude");
   const codexIdx = lines[1].indexOf("codex");
   assertEquals(claudeIdx, codexIdx);
+});
+
+Deno.test("formatStatus shows session name", () => {
+  const output = formatStatus(
+    testConfig,
+    makeInfo({ statuses: [defaultWorker] }),
+  );
+  assertEquals(output.includes("jackops-test-app"), true);
+});
+
+Deno.test("formatStatus shows daemon running", () => {
+  const output = formatStatus(
+    testConfig,
+    makeInfo({ statuses: [defaultWorker], daemon: { running: true } }),
+  );
+  assertEquals(output.includes("Daemon:   running"), true);
+});
+
+Deno.test("formatStatus shows daemon stopped", () => {
+  const output = formatStatus(
+    testConfig,
+    makeInfo({ statuses: [defaultWorker], daemon: { running: false } }),
+  );
+  assertEquals(output.includes("Daemon:   stopped"), true);
+});
+
+Deno.test("formatStatus shows approval mode with description", () => {
+  const output = formatStatus(
+    testConfig,
+    makeInfo({ statuses: [defaultWorker] }),
+  );
+  assertEquals(
+    output.includes("Approval: manual (manual approval required)"),
+    true,
+  );
+});
+
+Deno.test("formatStatus shows auto approval with model", () => {
+  const autoConfig: Config = {
+    ...testConfig,
+    orchestrator: { ...testConfig.orchestrator, approval: "auto" },
+  };
+  const output = formatStatus(
+    autoConfig,
+    makeInfo({
+      statuses: [defaultWorker],
+      autoApprovalModel: "claude-sonnet-4-5",
+    }),
+  );
+  assertEquals(
+    output.includes("Approval: auto (LLM evaluates permission prompts)"),
+    true,
+  );
+  assertEquals(output.includes("Model:    claude-sonnet-4-5"), true);
+});
+
+Deno.test("formatStatus shows yolo approval", () => {
+  const yoloConfig: Config = {
+    ...testConfig,
+    orchestrator: { ...testConfig.orchestrator, approval: "yolo" },
+  };
+  const output = formatStatus(
+    yoloConfig,
+    makeInfo({ statuses: [defaultWorker] }),
+  );
+  assertEquals(
+    output.includes("Approval: yolo (all prompts auto-approved)"),
+    true,
+  );
+  assertEquals(output.includes("Model:"), false);
+});
+
+Deno.test("formatStatus shows task counts", () => {
+  const tasks = { pending: 3, current: 1, complete: 2, rejected: 0 };
+  const output = formatStatus(
+    testConfig,
+    makeInfo({ statuses: [defaultWorker], tasks }),
+  );
+  assertEquals(
+    output.includes("Tasks: 3 pending, 1 current, 2 complete, 0 rejected"),
+    true,
+  );
+});
+
+Deno.test("formatStatus hides tasks when all zero", () => {
+  const tasks = { pending: 0, current: 0, complete: 0, rejected: 0 };
+  const output = formatStatus(
+    testConfig,
+    makeInfo({ statuses: [defaultWorker], tasks }),
+  );
+  assertEquals(output.includes("Tasks:"), false);
+});
+
+Deno.test("formatStatus hides tasks when null", () => {
+  const output = formatStatus(
+    testConfig,
+    makeInfo({ statuses: [defaultWorker], tasks: null }),
+  );
+  assertEquals(output.includes("Tasks:"), false);
 });

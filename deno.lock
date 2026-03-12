@@ -1,6 +1,7 @@
 {
   "version": "5",
   "specifiers": {
+    "jsr:@logtape/logtape@^2.0.4": "2.0.4",
     "jsr:@std/assert@*": "1.0.19",
     "jsr:@std/assert@1": "1.0.19",
     "jsr:@std/internal@^1.0.12": "1.0.12",
@@ -8,6 +9,9 @@
     "jsr:@std/yaml@1": "1.0.12"
   },
   "jsr": {
+    "@logtape/logtape@2.0.4": {
+      "integrity": "d4b6e85d82954f3d58014d85e4c0f93d6a836181ef4fbb4a852da7ed47979acb"
+    },
     "@std/assert@1.0.19": {
       "integrity": "eaada96ee120cb980bc47e040f82814d786fe8162ecc53c91d8df60b8755991e",
       "dependencies": [
@@ -29,6 +33,7 @@
   },
   "workspace": {
     "dependencies": [
+      "jsr:@logtape/logtape@^2.0.4",
       "jsr:@std/assert@1",
       "jsr:@std/path@1",
       "jsr:@std/yaml@1"

@@ -23,9 +23,14 @@ workers:
   - name: scout
     agent: claude
     prompt: "explore the codebase and describe the architecture"
+    role: executor
   - name: coder
     agent: codex
     prompt: "read all source files and suggest improvements"
+    role: executor
+orchestrator:
+  poll_interval: 5000 # ms (default)
+  max_retries: 2 # default
 tasks:
   - summary: "Document the auth module"
   - summary: "Refactor database layer"
@@ -34,12 +39,13 @@ tasks:
 ```
 
 Tasks defined in the config are automatically seeded into the queue on
-`jackops up`.
+`jackops up`. The daemon assigns them to idle workers automatically.
 
 Then:
 
 ```bash
 jackops up              # spawn workers in tmux + worktrees
+jackops daemon          # start orchestrator (assign tasks, monitor workers)
 jackops status          # show worker status
 jackops send scout "focus on the auth module"
 jackops attach scout    # switch to worker's tmux window
@@ -90,9 +96,13 @@ Optional:
 - **tmux windows, not panes.** Each worker gets a named tmux window. Scale to
   20+ workers without visual clutter. Attach to any worker with a keystroke.
 - **Agent-agnostic.** Anything with a CLI works. No SDK lock-in.
-- **Hooks for Claude, polling for others.** Claude Code hooks (via `--settings`)
-  give reliable event-driven detection. Other agents use `tmux capture-pane`
-  polling with completion markers.
+- **Hooks for Claude, polling for others.** Claude Code hooks (Stop,
+  PermissionRequest) give reliable event-driven detection. Other agents use
+  `tmux capture-pane` polling with signal file markers.
+- **LLM-based permission evaluation.** Both Claude (via PermissionRequest hook)
+  and non-Claude agents (via stall detection + pane capture) get permission
+  prompts evaluated by an LLM. Safe operations are auto-approved; unsafe ones
+  alert the user.
 - **Filesystem task queue.** `tasks/{pending,current,complete,rejected}/` --
   simple, debuggable, works across worktrees. Inspired by oompa.
 - **Git worktree isolation.** Each worker operates in its own worktree. Merge

@@ -29,7 +29,7 @@ Deno.test("init creates task directories", async () => {
   try {
     await tq.init(dir);
     for (const state of tq.TASK_STATES) {
-      const stat = await Deno.stat(`${dir}/tasks/${state}`);
+      const stat = await Deno.stat(`${dir}/.jackops/tasks/${state}`);
       assertEquals(stat.isDirectory, true);
     }
   } finally {
@@ -43,7 +43,7 @@ Deno.test("init is idempotent", async () => {
     await tq.init(dir);
     await tq.init(dir);
     for (const state of tq.TASK_STATES) {
-      const stat = await Deno.stat(`${dir}/tasks/${state}`);
+      const stat = await Deno.stat(`${dir}/.jackops/tasks/${state}`);
       assertEquals(stat.isDirectory, true);
     }
   } finally {

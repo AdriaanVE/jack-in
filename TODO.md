@@ -44,7 +44,7 @@ be revisited as the codebase grows.
 - [ ] `attach()` uses raw `Deno.Command` instead of tmux module -- intentional
       (needs inherited stdio), but add an interactive variant to `tmux.ts` if
       more interactive commands are added
-- [x] Integration + e2e tests added (38 tests across 7 files)
+- [x] Integration + e2e tests added (69 tests across 9 files)
 
 ### From Codex review
 
@@ -83,6 +83,32 @@ be revisited as the codebase grows.
 - [ ] Worktree/tmux error path coverage: parse failures, `removeByPath` errors,
       tmux wrapper failures
 
+## tmux input delivery
+
+- [ ] Send large prompts via local file instead of tmux send-keys -- send-keys
+      has length limits and encoding issues with special characters. Write
+      prompt to a temp file and send a short command like `cat /path | agent` or
+      use tmux load-buffer + paste-buffer
+
+## Task queue
+
+- [ ] Filesystem `claim()` is not atomic -- two workers polling simultaneously
+      could race on the same task. Consider flock or atomic rename strategy.
+
+## Permission evaluation
+
+- [ ] Make evaluator model configurable in `jackops.yaml` (currently hardcoded
+      to sonnet via `ANTHROPIC_DEFAULT_SONNET_MODEL` env var)
+- [ ] Support other API providers (OpenAI, Azure OpenAI, local models) --
+      currently Anthropic Foundry only
+- [ ] Stall detection timeout (60s) and LLM fetch timeout (30s) configurable in
+      orchestrator config
+- [ ] Permission-eval.sh uses prompt-based JSON extraction -- migrate to
+      tool_use for structured output like the daemon's pane evaluator
+- [x] Configurable approval mode: manual / auto / yolo in orchestrator config
+- [ ] Integration tests for permission-eval.sh with mocked curl -- test
+      safe/unsafe/API-failure response paths
+
 ## Distribution
 
 - [ ] `deno install` -- creates wrapper script in `~/.deno/bin/jackops`,
@@ -93,6 +119,14 @@ be revisited as the codebase grows.
 - [ ] JSR package -- publish to Deno registry, install via
       `deno install jsr:@adriaanve/jackops`
 - [ ] Homebrew tap -- formula pointing at GitHub Release binaries
+
+## Future: Terminal UI
+
+- [ ] Interactive status with live-updating worker states, task progress, and
+      log output in the dashboard tmux pane
+- [ ] Worker selection -- navigate to a worker's tmux window from the TUI
+- [ ] Library: [Im-Beast/deno_tui](https://github.com/Im-Beast/deno_tui) --
+      Deno-native TUI framework with components, input handling, and styling
 
 ## Future: Dashboard (inspired by agentsview)
 

@@ -3,6 +3,7 @@
 import { join } from "@std/path";
 
 export type TaskState = "pending" | "current" | "complete" | "rejected";
+export type TaskCounts = Record<TaskState, number>;
 
 export const TASK_STATES: TaskState[] = [
   "pending",
@@ -37,7 +38,7 @@ export interface TaskEntry {
   state: TaskState;
 }
 
-const TASKS_DIR = "tasks";
+const TASKS_DIR = ".jackops/tasks";
 let _idCounter = 0;
 
 /** Generate a unique task ID. */
@@ -110,6 +111,13 @@ export function claim(
 /** Mark a current task as complete. Moves current/ -> complete/. */
 export function complete(base: string, taskId: string): Promise<Task> {
   return moveTask(base, taskId, "current", "complete");
+}
+
+/** Unclaim a current task, moving it back to pending. */
+export function unclaim(base: string, taskId: string): Promise<Task> {
+  return moveTask(base, taskId, "current", "pending", {
+    assignee: undefined,
+  });
 }
 
 /** Reject a current task with feedback. Moves current/ -> rejected/. */
@@ -191,8 +199,8 @@ export async function ready(base: string): Promise<Task[]> {
 /** Count tasks by state (counts dir entries, avoids parsing JSON). */
 export async function counts(
   base: string,
-): Promise<Record<TaskState, number>> {
-  const result: Record<TaskState, number> = {
+): Promise<TaskCounts> {
+  const result: TaskCounts = {
     pending: 0,
     current: 0,
     complete: 0,

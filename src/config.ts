@@ -3,10 +3,23 @@
 import { parse as parseYaml } from "@std/yaml";
 import { AGENT_NAMES, type AgentType, isAgentType } from "./agents.ts";
 
+export type WorkerRole = "executor" | "reviewer" | "planner";
+export const WORKER_ROLES: WorkerRole[] = ["executor", "reviewer", "planner"];
+
 export interface WorkerConfig {
   name: string;
   agent: AgentType;
   prompt: string;
+  role: WorkerRole;
+}
+
+export type ApprovalMode = "manual" | "auto" | "yolo";
+export const APPROVAL_MODES: ApprovalMode[] = ["manual", "auto", "yolo"];
+
+export interface OrchestratorConfig {
+  poll_interval: number;
+  max_retries: number;
+  approval: ApprovalMode;
 }
 
 export interface TaskConfig {
@@ -21,6 +34,7 @@ export interface Config {
   project: string;
   workers: WorkerConfig[];
   tasks?: TaskConfig[];
+  orchestrator: OrchestratorConfig;
 }
 
 const SAFE_NAME = /^[a-zA-Z0-9_-]+$/;
@@ -91,7 +105,24 @@ export async function loadConfig(path: string): Promise<Config> {
       );
     }
 
-    parsed.push({ name, agent, prompt });
+    const role = entry.role;
+    if (
+      role !== undefined &&
+      (typeof role !== "string" || !WORKER_ROLES.includes(role as WorkerRole))
+    ) {
+      throw new Error(
+        `Invalid worker '${name}': 'role' must be one of: ${
+          WORKER_ROLES.join(", ")
+        }`,
+      );
+    }
+
+    parsed.push({
+      name,
+      agent,
+      prompt,
+      role: (role as WorkerRole) ?? "executor",
+    });
   }
 
   const tasks: TaskConfig[] = [];
@@ -125,9 +156,35 @@ export async function loadConfig(path: string): Promise<Config> {
     }
   }
 
+  const orchestrator: OrchestratorConfig = {
+    poll_interval: 5000,
+    max_retries: 2,
+    approval: "manual",
+  };
+  if (raw.orchestrator && typeof raw.orchestrator === "object") {
+    const o = raw.orchestrator as Record<string, unknown>;
+    if (typeof o.poll_interval === "number") {
+      orchestrator.poll_interval = o.poll_interval;
+    }
+    if (typeof o.max_retries === "number") {
+      orchestrator.max_retries = o.max_retries;
+    }
+    if (typeof o.approval === "string") {
+      if (!APPROVAL_MODES.includes(o.approval as ApprovalMode)) {
+        throw new Error(
+          `Invalid orchestrator 'approval': must be one of: ${
+            APPROVAL_MODES.join(", ")
+          }`,
+        );
+      }
+      orchestrator.approval = o.approval as ApprovalMode;
+    }
+  }
+
   return {
     project,
     workers: parsed,
     tasks: tasks.length > 0 ? tasks : undefined,
+    orchestrator,
   };
 }
