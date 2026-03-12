@@ -39,21 +39,24 @@ export function spawnCommand(
   return AGENTS[agent](fullPrompt);
 }
 
-/** Check if an agent CLI is available on PATH. */
-export async function isAgentInstalled(agent: AgentType): Promise<boolean> {
-  const { success } = await exec("which", [agent]);
-  return success;
+export interface DetectedAgent {
+  agent: AgentType;
+  path: string;
+}
+
+/** Check if an agent CLI is available on PATH, return its binary path. */
+export async function findAgent(
+  agent: AgentType,
+): Promise<DetectedAgent | null> {
+  const { success, stdout } = await exec("which", [agent]);
+  if (!success || !stdout) return null;
+  return { agent, path: stdout.trim() };
 }
 
 /** Detect all installed agent CLIs, returned in preference order. */
-export async function detectAgents(): Promise<AgentType[]> {
-  const results = await Promise.all(
-    AGENT_PREFERENCE.map(async (agent) => ({
-      agent,
-      installed: await isAgentInstalled(agent),
-    })),
-  );
-  return results.filter((r) => r.installed).map((r) => r.agent);
+export async function detectAgents(): Promise<DetectedAgent[]> {
+  const results = await Promise.all(AGENT_PREFERENCE.map(findAgent));
+  return results.filter((r): r is DetectedAgent => r !== null);
 }
 
 /**

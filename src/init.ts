@@ -5,6 +5,8 @@ import {
   AGENT_PREFERENCE,
   type AgentType,
   detectAgents,
+  type DetectedAgent,
+  findAgent,
   initCommand,
   shellEscape,
 } from "./agents.ts";
@@ -187,26 +189,50 @@ export async function init(opts: InitOpts): Promise<void> {
 
   // Detect agents
   console.log("Detecting installed agents...");
-  let agents: AgentType[];
+  let detected: DetectedAgent[];
   if (opts.agent) {
-    agents = [opts.agent];
-    console.log(`  Using specified agent: ${opts.agent}`);
-  } else {
-    agents = await detectAgents();
-    if (agents.length === 0) {
-      console.error(
-        "No agent CLIs found on PATH. Install at least one of:",
-      );
-      for (const a of AGENT_PREFERENCE) {
-        console.error(`  - ${a}`);
-      }
+    const found = await findAgent(opts.agent);
+    if (!found) {
+      console.error(`Agent '${opts.agent}' not found on PATH.`);
       Deno.exit(1);
     }
-    console.log(`  Found: ${agents.join(", ")}`);
+    detected = [found];
+  } else {
+    detected = await detectAgents();
+  }
+
+  if (detected.length === 0) {
+    console.error("No agent CLIs found on PATH. Install at least one of:");
+    for (const a of AGENT_PREFERENCE) {
+      console.error(`  - ${a}`);
+    }
+    Deno.exit(1);
   }
 
   // Pick the agent to run init with
-  const initAgent = opts.agent ?? agents[0];
+  let initAgent: AgentType;
+  if (detected.length === 1) {
+    const d = detected[0];
+    console.log(`  Found ${d.agent} (${d.path})`);
+    initAgent = d.agent;
+  } else {
+    console.log("\n  Available agents:");
+    for (let i = 0; i < detected.length; i++) {
+      const d = detected[i];
+      console.log(`    [${i + 1}] ${d.agent}  ${d.path}`);
+    }
+    const answer = await prompt(
+      `\n  Which agent should run the setup? [1-${detected.length}] `,
+    );
+    const idx = parseInt(answer) - 1;
+    if (isNaN(idx) || idx < 0 || idx >= detected.length) {
+      console.log("Aborted.");
+      Deno.exit(0);
+    }
+    initAgent = detected[idx].agent;
+  }
+
+  const agents = detected.map((d) => d.agent);
 
   // Read project context
   console.log("Reading project context...");
