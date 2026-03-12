@@ -274,7 +274,7 @@ async function up(opts: UpOpts = { orchestrator: true }) {
       nonClaudeTargets.push(target);
     }
 
-    console.log(`  ${w.name} (${w.agent}) -> ${wt}`);
+    console.log(`  ${w.name} (${w.agent}) -> worktree: ${wt}`);
   }
 
   // Dismiss startup prompts (e.g. Codex trust prompt) for non-Claude agents
@@ -373,7 +373,7 @@ async function status() {
   const base = Deno.cwd();
   const [{ workers: statuses, daemon }, startedEpoch, tasks] = await Promise
     .all([
-      getStatus(config),
+      getStatus(config, base),
       getSessionStarted(config),
       tq.counts(base),
     ]);

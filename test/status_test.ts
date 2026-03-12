@@ -24,7 +24,7 @@ const testConfig: Config = {
 const defaultWorker = {
   name: "backend",
   agent: "claude",
-  state: "running" as const,
+  state: "working" as const,
   worktree: ".w-test-app-backend",
 };
 
@@ -51,23 +51,23 @@ Deno.test("formatStatus shows worker statuses", () => {
     {
       name: "backend",
       agent: "claude",
-      state: "running" as const,
+      state: "working" as const,
       worktree: ".w-test-app-backend",
     },
     {
       name: "frontend",
       agent: "codex",
-      state: "stopped" as const,
+      state: "waiting" as const,
       worktree: ".w-test-app-frontend",
     },
   ];
   const output = formatStatus(testConfig, makeInfo({ statuses }));
   assertEquals(output.includes("backend"), true);
   assertEquals(output.includes("claude"), true);
-  assertEquals(output.includes("running"), true);
+  assertEquals(output.includes("working"), true);
   assertEquals(output.includes("frontend"), true);
   assertEquals(output.includes("codex"), true);
-  assertEquals(output.includes("stopped"), true);
+  assertEquals(output.includes("waiting"), true);
 });
 
 Deno.test("formatStatus pads columns consistently", () => {
@@ -75,7 +75,7 @@ Deno.test("formatStatus pads columns consistently", () => {
     {
       name: "a",
       agent: "claude",
-      state: "running" as const,
+      state: "working" as const,
       worktree: ".w-test-app-a",
     },
     {

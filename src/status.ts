@@ -1,9 +1,12 @@
 /** Query tmux state and format status output. */
 
+import { join } from "@std/path";
 import { type ApprovalMode, type Config, sessionName } from "./config.ts";
 import type { TaskCounts } from "./task-queue.ts";
 import * as tmux from "./tmux.ts";
 import { worktreeDir } from "./worktree.ts";
+
+const CURRENT_TASK_DIR = ".jackops/current-task";
 
 function formatTime(epoch: number): string {
   const d = new Date(epoch * 1000);
@@ -15,7 +18,7 @@ function formatTime(epoch: number): string {
   });
 }
 
-export type WorkerState = "running" | "stopped" | "gone";
+export type WorkerState = "working" | "waiting" | "stopped" | "gone";
 
 export interface WorkerStatus {
   name: string;
@@ -51,8 +54,22 @@ function paneIsRunning(pane: tmux.PaneInfo): boolean {
   return !pane.paneDead && !!cmd && !SHELLS.has(cmd);
 }
 
+async function hasCurrentTask(
+  base: string,
+  workerName: string,
+): Promise<boolean> {
+  try {
+    await Deno.stat(join(base, CURRENT_TASK_DIR, workerName));
+    return true;
+  } catch (e) {
+    if (e instanceof Deno.errors.NotFound) return false;
+    throw e;
+  }
+}
+
 export async function getStatus(
   config: Config,
+  base?: string,
 ): Promise<{ workers: WorkerStatus[]; daemon: DaemonStatus }> {
   const session = sessionName(config.project);
   if (!(await tmux.hasSession(session))) {
@@ -65,18 +82,25 @@ export async function getStatus(
     paneByWindow.set(p.windowName, p);
   }
 
-  const workers = config.workers.map((w) => {
+  const workers = await Promise.all(config.workers.map(async (w) => {
     const pane = paneByWindow.get(w.name);
-    const state: WorkerState = pane
-      ? (paneIsRunning(pane) ? "running" : "stopped")
-      : "gone";
+    let state: WorkerState = "gone";
+    if (pane) {
+      if (!paneIsRunning(pane)) {
+        state = "stopped";
+      } else if (base && await hasCurrentTask(base, w.name)) {
+        state = "working";
+      } else {
+        state = "waiting";
+      }
+    }
     return {
       name: w.name,
       agent: w.agent,
       state,
       worktree: worktreeDir(config.project, w.name),
     };
-  });
+  }));
 
   const dashboard = paneByWindow.get("dashboard");
   const daemon: DaemonStatus = {
