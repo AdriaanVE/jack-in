@@ -19,6 +19,7 @@ const testConfig: Config = {
     },
   ],
   orchestrator: { poll_interval: 5000, max_retries: 2, approval: "manual" },
+  startup_instructions: null,
 };
 
 const defaultWorker = {
