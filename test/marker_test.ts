@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   completionMarker,
   hasCompletionMarker,
@@ -197,4 +197,47 @@ Deno.test("hasCompletionMarker stripFormatting catches marker only in backticks 
   // includes() checks for "JACKOPS_TASK_COMPLETE:t1" which IS inside the backtick string
   // So this actually matches via includes() first
   assertEquals(hasCompletionMarker(text, "t1"), true);
+});
+
+// --- Sync test: stop-hook inlined marker logic must match src/marker.ts ---
+
+Deno.test("stop-hook.ts contains identical marker logic as src/marker.ts", async () => {
+  const hookSrc = await Deno.readTextFile("hooks/stop-hook.ts");
+  const markerSrc = await Deno.readTextFile("src/marker.ts");
+
+  // Verify the hook contains the same MARKER_PREFIX value
+  assertStringIncludes(hookSrc, `const MARKER_PREFIX = "${MARKER_PREFIX}";`);
+
+  // Strip comment-only lines so comments in marker.ts don't cause false diffs
+  // Strip comment-only and blank lines to compare pure logic
+  const stripNoise = (s: string) =>
+    s.split("\n").filter((l) => l.trim() && !/^\s*\/\//.test(l)).join("\n")
+      .trim();
+
+  // Extract function bodies and verify logic matches (ignoring comments)
+  for (const fnName of ["stripFormatting", "hasCompletionMarker"]) {
+    const markerFnMatch = markerSrc.match(
+      new RegExp(
+        `export function ${fnName}\\([^)]*\\)[^{]*\\{([\\s\\S]*?)\\n\\}`,
+      ),
+    );
+    const hookFnMatch = hookSrc.match(
+      new RegExp(`function ${fnName}\\([^)]*\\)[^{]*\\{([\\s\\S]*?)\\n\\}`),
+    );
+    assertEquals(
+      markerFnMatch !== null,
+      true,
+      `${fnName} not found in src/marker.ts`,
+    );
+    assertEquals(
+      hookFnMatch !== null,
+      true,
+      `${fnName} not found in hooks/stop-hook.ts`,
+    );
+    assertEquals(
+      stripNoise(hookFnMatch![1]),
+      stripNoise(markerFnMatch![1]),
+      `${fnName} body differs between src/marker.ts and hooks/stop-hook.ts`,
+    );
+  }
 });

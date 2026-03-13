@@ -101,6 +101,68 @@ tasks: # Optional. Seeded on `jackops up`.
 | `planner`  | Breaks goals into tasks in the queue.        |
 | `reviewer` | Reviews completed work. Approves or rejects. |
 
+## Task format
+
+Tasks are JSON files in the filesystem queue. When creating tasks via
+`jackops tasks add` or programmatically, use these fields:
+
+| Field         | Required | Description                                          |
+| ------------- | -------- | ---------------------------------------------------- |
+| `summary`     | yes      | One-line task description                            |
+| `description` | no       | Detailed description (defaults to summary)           |
+| `files`       | no       | Hint files/directories for the worker                |
+| `acceptance`  | no       | Completion criteria (list of strings)                |
+| `depends_on`  | no       | Task summaries this depends on (resolved to IDs)     |
+| `feedback`    | no       | Rejection feedback (set by reject, cleared on retry) |
+
+### Task examples in jackops.yaml
+
+```yaml
+tasks:
+  # Simple task — just a summary
+  - summary: "Explore the codebase and document architecture"
+
+  # Task with description and files hint
+  - summary: "Add input validation to API endpoints"
+    description: "Add zod schemas for request bodies in all POST/PUT handlers. Return 400 with field-level errors."
+    files:
+      - src/routes/
+      - src/schemas/
+
+  # Task with acceptance criteria
+  - summary: "Add unit tests for auth module"
+    acceptance:
+      - "All public functions have tests"
+      - "Edge cases: expired tokens, malformed JWTs, missing claims"
+      - "Tests pass with deno test"
+
+  # Task with dependency (uses summary string, resolved to ID at seed time)
+  - summary: "Refactor database queries to use connection pool"
+    depends_on: ["Explore the codebase and document architecture"]
+
+  # Full task
+  - summary: "Implement rate limiting middleware"
+    description: "Add sliding-window rate limiting. 100 req/min per IP. Use Redis if available, fall back to in-memory."
+    files:
+      - src/middleware/
+      - src/config.ts
+    acceptance:
+      - "Rate limit headers in responses (X-RateLimit-*)"
+      - "429 response when limit exceeded"
+      - "Tests cover both Redis and in-memory backends"
+    depends_on: ["Add input validation to API endpoints"]
+```
+
+### Adding tasks via CLI
+
+```bash
+# Minimal
+jackops tasks add "Fix the login form validation"
+
+# With description
+jackops tasks add "Migrate database schema" --desc "Add created_at and updated_at columns to users table. Write up and down migrations."
+```
+
 ## Architecture
 
 - **Daemon** (mechanical): assigns pending tasks to idle workers, detects
@@ -121,6 +183,22 @@ Task queue is filesystem-based:
 `.jackops/tasks/{pending,current,review,complete,rejected}/`
 
 Signal files in `.jackops/signals/` track worker completion.
+
+## Worker environment
+
+If you are working in a git worktree (your path contains `.w-`), keep in mind:
+
+- **Your branch** is `jackops/<project>/<worker>`. Stay on it — don't switch
+  branches. The daemon and orchestrator expect you here.
+- **Only committed files are present.** Untracked files from the main checkout
+  (`.env`, build artifacts, generated code) won't exist here.
+- **Dependencies aren't shared.** `node_modules/`, `.venv/`, etc. need to be
+  installed in this worktree. If builds or tests fail, run the project's install
+  command first (check `README.md`).
+- **Commit your work** to your branch. The orchestrator reviews via
+  `git diff main` from your worktree.
+- **Other workers can't see your changes** until they're merged. Each worker has
+  its own worktree and branch.
 
 ## tmux session
 

@@ -52,6 +52,37 @@ jackops tasks complete <id>
 
 This moves the task from `current/` to `review/` so you can review it.
 
+## Verifying worker panes
+
+The daemon manages task assignment and completion detection mechanically, but
+things can go wrong. Always verify by checking the actual tmux pane.
+
+**On task completion**: When a task moves to `review`, check the worker's tmux
+pane to confirm the agent actually finished. Sometimes the daemon detects a
+stale signal and moves the task prematurely. Run:
+
+```bash
+tmux capture-pane -t jackops-<project>:<worker> -p | tail -30
+```
+
+If the worker is still actively working, the task was moved too early. Move it
+back or let the worker finish before reviewing.
+
+**On task assignment**: When the daemon assigns a task to a worker, verify the
+prompt was actually entered in the worker's pane. Sometimes the task message
+gets stuck in the tmux input buffer but is never submitted. Check the pane:
+
+```bash
+tmux capture-pane -t jackops-<project>:<worker> -p | tail -30
+```
+
+If the worker shows no sign of working on the new task (still idle, no prompt
+visible), re-send it:
+
+```bash
+jackops send <worker> "Check your current task and start working on it"
+```
+
 ## Creating follow-up tasks
 
 If you notice work that should be done but is outside the scope of the current

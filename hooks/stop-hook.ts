@@ -13,7 +13,43 @@
  * The current task ID is read from <current_task_dir>/<worker_name>.
  */
 
-import { hasCompletionMarker } from "../src/marker.ts";
+// --- Marker detection (inlined — this hook is copied to target projects) ---
+
+const MARKER_PREFIX = "JACKOPS_TASK_COMPLETE:";
+
+function stripFormatting(line: string): string {
+  let s = line.trim();
+  if (s.startsWith("```") && s.endsWith("```")) {
+    s = s.slice(3, -3).trim();
+  } else if (s.startsWith("```")) {
+    s = s.slice(3).trim();
+  } else if (s.endsWith("```")) {
+    s = s.slice(0, -3).trim();
+  }
+  if (s.startsWith("`") && s.endsWith("`")) s = s.slice(1, -1).trim();
+  if (
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'"))
+  ) {
+    s = s.slice(1, -1).trim();
+  }
+  if (s.endsWith(".")) s = s.slice(0, -1).trim();
+  return s;
+}
+
+function hasCompletionMarker(text: string, taskId: string): boolean {
+  const expected = `${MARKER_PREFIX}${taskId}`;
+  const lines = text.split("\n");
+  let checked = 0;
+  for (let i = lines.length - 1; i >= 0 && checked < 10; i--) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) continue;
+    checked++;
+    if (trimmed.includes(expected)) return true;
+    if (checked <= 5 && stripFormatting(trimmed) === expected) return true;
+  }
+  return false;
+}
 
 // --- Read stdin JSON ---
 

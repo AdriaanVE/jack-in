@@ -203,11 +203,13 @@ export async function ready(base: string): Promise<Task[]> {
     list(base, "complete"),
   ]);
   const completeIds = new Set(completed.map((e) => e.task.id));
+  const completeSummaries = new Set(completed.map((e) => e.task.summary));
 
   return pending
     .filter((e) => {
       const deps = e.task.depends_on ?? [];
-      return deps.every((d) => completeIds.has(d));
+      // Match by ID or summary so both resolved and unresolved deps work
+      return deps.every((d) => completeIds.has(d) || completeSummaries.has(d));
     })
     .map((e) => e.task);
 }
@@ -244,17 +246,31 @@ export async function seed(base: string, tasks: TaskSeed[]): Promise<number> {
   await init(base);
   const existing = await list(base);
   const existingSummaries = new Set(existing.map((e) => e.task.summary));
+
+  // Build summary->id map from existing tasks so depends_on can reference them
+  const summaryToId = new Map<string, string>();
+  for (const e of existing) {
+    summaryToId.set(e.task.summary, e.task.id);
+  }
+
   let seeded = 0;
   for (const t of tasks) {
     if (existingSummaries.has(t.summary)) continue;
+    const id = generateId();
+
+    // Resolve depends_on summary strings to task IDs
+    const resolvedDeps = t.depends_on
+      ?.map((dep) => summaryToId.get(dep) ?? dep);
+
     await create(base, {
-      id: generateId(),
+      id,
       summary: t.summary,
       description: t.description ?? t.summary,
       files: t.files,
       acceptance: t.acceptance,
-      depends_on: t.depends_on,
+      depends_on: resolvedDeps,
     });
+    summaryToId.set(t.summary, id);
     seeded++;
   }
   return seeded;

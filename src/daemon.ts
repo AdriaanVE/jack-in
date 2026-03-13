@@ -517,12 +517,17 @@ async function tick(
   const watchdogChecks: Promise<void>[] = [];
 
   for (const [, state] of workers) {
-    const signaled = await hasSignal(base, state.name);
-    log.debug`${state.name}: task=${
-      state.currentTask ?? "none"
-    } signaled=${signaled}`;
+    if (!state.currentTask) {
+      // Worker is idle and ready — no need to check signal file
+      log.debug`${state.name}: task=none idle`;
+      idleWorkers.push(state);
+      continue;
+    }
 
-    if (state.currentTask && signaled) {
+    const signaled = await hasSignal(base, state.name);
+    log.debug`${state.name}: task=${state.currentTask} signaled=${signaled}`;
+
+    if (signaled) {
       // Ignore early signals — the Stop hook fires on every Claude response
       // turn, so signals arriving right after assignment are from the previous
       // turn, not actual task completion.
@@ -536,7 +541,7 @@ async function tick(
       // Worker finished its task
       markComplete(state, idleWorkers);
       try {
-        await tq.review(base, state.currentTask!);
+        await tq.review(base, state.currentTask);
         log
           .info`[review] ${state.name} finished ${state.currentTask}, sent to review`;
       } catch (e) {
@@ -546,11 +551,7 @@ async function tick(
       }
       await clearCurrentTask(base, state.name);
       state.currentTask = null;
-    } else if (!state.currentTask && signaled) {
-      // Worker is idle and ready
-      idleWorkers.push(state);
     } else if (
-      state.currentTask && !signaled &&
       state.assignedAt &&
       now - state.assignedAt > TIER2_TIMEOUT_MS
     ) {
