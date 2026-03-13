@@ -221,6 +221,14 @@ Then tell the user:
 - When `jackops up` runs, this init session will be killed automatically and
   they will be switched to the orchestrator agent's tmux window
 
+Also give them a quick tmux cheat sheet for navigating the swarm session:
+
+- `Ctrl-b w` -- list all windows (workers, dashboard, orchestrator) and pick one
+- `Ctrl-b n` / `Ctrl-b p` -- next / previous window
+- `Ctrl-b <number>` -- jump to window by index
+- `Ctrl-b d` -- detach from the session (swarm keeps running)
+- `tmux attach -t <session>` -- re-attach later
+
 ## Agent skill installation
 
 After writing the config, install the jackops CLI skill so that agents working
