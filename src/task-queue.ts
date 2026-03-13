@@ -2,12 +2,18 @@
 
 import { join } from "@std/path";
 
-export type TaskState = "pending" | "current" | "complete" | "rejected";
+export type TaskState =
+  | "pending"
+  | "current"
+  | "review"
+  | "complete"
+  | "rejected";
 export type TaskCounts = Record<TaskState, number>;
 
 export const TASK_STATES: TaskState[] = [
   "pending",
   "current",
+  "review",
   "complete",
   "rejected",
 ];
@@ -113,6 +119,16 @@ export function complete(base: string, taskId: string): Promise<Task> {
   return moveTask(base, taskId, "current", "complete");
 }
 
+/** Send a current task for review. Moves current/ -> review/. */
+export function review(base: string, taskId: string): Promise<Task> {
+  return moveTask(base, taskId, "current", "review");
+}
+
+/** Approve a reviewed task. Moves review/ -> complete/. */
+export function approve(base: string, taskId: string): Promise<Task> {
+  return moveTask(base, taskId, "review", "complete");
+}
+
 /** Unclaim a current task, moving it back to pending. */
 export function unclaim(base: string, taskId: string): Promise<Task> {
   return moveTask(base, taskId, "current", "pending", {
@@ -120,13 +136,13 @@ export function unclaim(base: string, taskId: string): Promise<Task> {
   });
 }
 
-/** Reject a current task with feedback. Moves current/ -> rejected/. */
+/** Reject a reviewed task with feedback. Moves review/ -> rejected/. */
 export function reject(
   base: string,
   taskId: string,
   feedback: string,
 ): Promise<Task> {
-  return moveTask(base, taskId, "current", "rejected", { feedback });
+  return moveTask(base, taskId, "review", "rejected", { feedback });
 }
 
 /** Retry a rejected task. Moves rejected/ -> pending/, increments retries. */
@@ -203,6 +219,7 @@ export async function counts(
   const result: TaskCounts = {
     pending: 0,
     current: 0,
+    review: 0,
     complete: 0,
     rejected: 0,
   };

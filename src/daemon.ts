@@ -388,9 +388,9 @@ export async function run(opts: DaemonOptions): Promise<void> {
 
     const c = await tq.counts(base);
     log
-      .debug`Tick done. Tasks: ${c.pending} pending, ${c.current} current, ${c.complete} complete, ${c.rejected} rejected`;
+      .debug`Tick done. Tasks: ${c.pending} pending, ${c.current} current, ${c.review} review, ${c.complete} complete, ${c.rejected} rejected`;
 
-    if (c.pending === 0 && c.current === 0) {
+    if (c.pending === 0 && c.current === 0 && c.review === 0) {
       log
         .info`All tasks complete (${c.complete} done, ${c.rejected} rejected). Watching for new tasks...`;
       await waitForNewTask(base, signal);
@@ -446,10 +446,11 @@ async function tick(
       }
       // Worker finished its task
       try {
-        await tq.complete(base, state.currentTask);
-        log.info`[complete] ${state.name} finished ${state.currentTask}`;
+        await tq.review(base, state.currentTask);
+        log
+          .info`[review] ${state.name} finished ${state.currentTask}, sent to review`;
       } catch (e) {
-        log.warn`Could not complete ${state.currentTask}: ${
+        log.warn`Could not move ${state.currentTask} to review: ${
           e instanceof Error ? e.message : e
         }`;
       }

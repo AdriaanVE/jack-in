@@ -118,6 +118,30 @@ export interface StatusInfo {
   autoApprovalModel?: string | null;
 }
 
+export interface JsonStatus {
+  session: string;
+  daemon: DaemonStatus;
+  workers: (WorkerStatus & { branch: string })[];
+  tasks: TaskCounts;
+}
+
+export function formatJsonStatus(
+  config: Config,
+  info: StatusInfo,
+): JsonStatus {
+  const session = sessionName(config.project);
+  return {
+    session,
+    daemon: info.daemon,
+    workers: info.statuses.map((s) => ({
+      ...s,
+      branch: `jackops/${config.project}/${s.name}`,
+    })),
+    tasks: info.tasks ??
+      { pending: 0, current: 0, review: 0, complete: 0, rejected: 0 },
+  };
+}
+
 export function formatStatus(config: Config, info: StatusInfo): string {
   const { statuses, startedEpoch, daemon, tasks } = info;
   const lines: string[] = [];
@@ -162,12 +186,12 @@ export function formatStatus(config: Config, info: StatusInfo): string {
 
   // Tasks
   if (tasks) {
-    const total = tasks.pending + tasks.current + tasks.complete +
-      tasks.rejected;
+    const total = tasks.pending + tasks.current + tasks.review +
+      tasks.complete + tasks.rejected;
     if (total > 0) {
       lines.push("");
       lines.push(
-        `Tasks: ${tasks.pending} pending, ${tasks.current} current, ${tasks.complete} complete, ${tasks.rejected} rejected`,
+        `Tasks: ${tasks.pending} pending, ${tasks.current} current, ${tasks.review} review, ${tasks.complete} complete, ${tasks.rejected} rejected`,
       );
     }
   }

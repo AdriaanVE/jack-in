@@ -31,6 +31,7 @@ export interface OrchestratorConfig {
   poll_interval: number;
   max_retries: number;
   approval: ApprovalMode;
+  agent: boolean;
 }
 
 export interface TaskConfig {
@@ -172,6 +173,7 @@ export async function loadConfig(path: string): Promise<Config> {
     poll_interval: 5000,
     max_retries: 2,
     approval: "manual",
+    agent: true,
   };
   if (raw.orchestrator && typeof raw.orchestrator === "object") {
     const o = raw.orchestrator as Record<string, unknown>;
@@ -190,6 +192,9 @@ export async function loadConfig(path: string): Promise<Config> {
         );
       }
       orchestrator.approval = o.approval as ApprovalMode;
+    }
+    if (typeof o.agent === "boolean") {
+      orchestrator.agent = o.agent;
     }
   }
 

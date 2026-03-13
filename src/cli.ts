@@ -9,8 +9,19 @@ import {
 } from "./config.ts";
 import * as tmux from "./tmux.ts";
 import * as worktree from "./worktree.ts";
-import { isAgentType, shellEscape, spawnCommand } from "./agents.ts";
-import { formatStatus, getSessionStarted, getStatus } from "./status.ts";
+import {
+  detectAgents,
+  initCommand,
+  isAgentType,
+  shellEscape,
+  spawnCommand,
+} from "./agents.ts";
+import {
+  formatJsonStatus,
+  formatStatus,
+  getSessionStarted,
+  getStatus,
+} from "./status.ts";
 import * as tq from "./task-queue.ts";
 import * as daemon from "./daemon.ts";
 import { setupLogging } from "./log.ts";
@@ -44,16 +55,19 @@ Usage:
   jackops init [options]             Interactive setup — generate jackops.yaml
   jackops up [options]               Spawn workers + start orchestrator daemon
   jackops down                      Kill session and clean up worktrees
-  jackops status                    Show worker status
+  jackops status [--json]           Show worker status
   jackops send <worker> <message>   Send a message to a worker
   jackops attach <worker>           Switch to a worker's tmux window
   jackops daemon [options]          Start the orchestrator daemon
   jackops tasks                     List all tasks
   jackops tasks add <summary>       Add a task to the queue
+  jackops tasks approve <id>        Approve a reviewed task
+  jackops tasks reject <id> <msg>   Reject a reviewed task with feedback
   jackops tasks init                Initialize task queue directories
 
 Options:
   --no-orchestrator                Skip starting the daemon (manual approval only)
+  --no-orchestrator-agent          Skip spawning the LLM orchestrator agent
   --approval <mode>                Override approval mode from config
   --agent <type>                   Agent to use for init (claude|codex|opencode|gemini)
   --template                       Generate a template config without an LLM
@@ -144,10 +158,13 @@ function daemonCommand(
 
 interface UpOpts {
   orchestrator: boolean;
+  orchestratorAgent: boolean;
   approval?: ApprovalMode;
 }
 
-async function up(opts: UpOpts = { orchestrator: true }) {
+async function up(
+  opts: UpOpts = { orchestrator: true, orchestratorAgent: true },
+) {
   const configPath = await findConfig();
   const config = await loadConfig(configPath);
   if (opts.approval) config.orchestrator.approval = opts.approval;
@@ -311,6 +328,47 @@ async function up(opts: UpOpts = { orchestrator: true }) {
     console.log(`\nOrchestrator daemon started in dashboard pane.`);
   }
 
+  // Spawn orchestrator LLM agent if enabled and tasks exist
+  const hasTasks = config.tasks && config.tasks.length > 0;
+  if (opts.orchestratorAgent && config.orchestrator.agent && hasTasks) {
+    const agents = await detectAgents();
+    const orchestratorAgent = agents.find((a) => a.agent === "claude") ??
+      agents[0];
+    if (orchestratorAgent) {
+      const instructionsPath = new URL(".", import.meta.url).pathname.replace(
+        /\/src\/$/,
+        "",
+      ) + "/docs/orchestrator-instructions.md";
+      const promptPath = join(base, ".jackops", "orchestrator-prompt.md");
+      const instructions = await Deno.readTextFile(instructionsPath);
+      const orchPrompt = [
+        instructions,
+        "",
+        `## Current status`,
+        "",
+        `Run \`jackops status --json\` to get the current swarm state. The project root is: ${base}`,
+        "",
+        `Worker worktrees are at: ${
+          config.workers.map((w) =>
+            join(base, worktree.worktreeDir(config.project, w.name))
+          ).join(", ")
+        }`,
+      ].join("\n");
+      await Deno.writeTextFile(promptPath, orchPrompt);
+      await tmux.createWindow(session, "orchestrator");
+      const orchTarget = `${session}:orchestrator`;
+      const cmd = initCommand(orchestratorAgent.agent, promptPath);
+      await tmux.sendKeys(orchTarget, `cd ${shellEscape(base)} && ${cmd}`);
+      console.log(
+        `Orchestrator agent (${orchestratorAgent.agent}) started in 'orchestrator' window.`,
+      );
+    } else {
+      console.log(
+        "No agent CLI found for orchestrator agent. Skipping (daemon still runs).",
+      );
+    }
+  }
+
   await tmux.selectWindow(session, "dashboard");
 
   console.log(`\nSwarm running in tmux session '${session}'.`);
@@ -371,7 +429,7 @@ async function down() {
   }
 }
 
-async function status() {
+async function status(json = false) {
   const configPath = await findConfig();
   const config = await loadConfig(configPath);
   const base = Deno.cwd();
@@ -381,18 +439,21 @@ async function status() {
       getSessionStarted(config),
       tq.counts(base),
     ]);
-  console.log(
-    formatStatus(config, {
-      statuses,
-      startedEpoch,
-      daemon,
-      tasks,
-      autoApprovalModel: config.orchestrator.approval === "auto"
-        ? (Deno.env.get("ANTHROPIC_DEFAULT_SONNET_MODEL") ??
-          "claude-sonnet-4-5")
-        : undefined,
-    }),
-  );
+  const info = {
+    statuses,
+    startedEpoch,
+    daemon,
+    tasks,
+    autoApprovalModel: config.orchestrator.approval === "auto"
+      ? (Deno.env.get("ANTHROPIC_DEFAULT_SONNET_MODEL") ??
+        "claude-sonnet-4-5")
+      : undefined,
+  };
+  if (json) {
+    console.log(JSON.stringify(formatJsonStatus(config, info), null, 2));
+  } else {
+    console.log(formatStatus(config, info));
+  }
 }
 
 async function send(workerName: string, message: string) {
@@ -486,6 +547,27 @@ async function tasks(subcommand: string | undefined, args: string[]) {
       console.log(`Created ${task.id}: ${task.summary}`);
       break;
     }
+    case "approve": {
+      const [taskId] = args;
+      if (!taskId) {
+        console.error("Usage: jackops tasks approve <id>");
+        Deno.exit(1);
+      }
+      await tq.approve(base, taskId);
+      console.log(`Approved ${taskId}.`);
+      break;
+    }
+    case "reject": {
+      const [taskId, ...feedbackParts] = args;
+      if (!taskId || feedbackParts.length === 0) {
+        console.error("Usage: jackops tasks reject <id> <feedback>");
+        Deno.exit(1);
+      }
+      const feedback = feedbackParts.join(" ");
+      await tq.reject(base, taskId, feedback);
+      console.log(`Rejected ${taskId}.`);
+      break;
+    }
     default: {
       // List tasks
       const entries = await tq.list(base);
@@ -497,8 +579,8 @@ async function tasks(subcommand: string | undefined, args: string[]) {
       for (const e of entries) c[e.state] = (c[e.state] ?? 0) + 1;
       console.log(
         `Tasks: ${c.pending ?? 0} pending, ${c.current ?? 0} current, ${
-          c.complete ?? 0
-        } complete, ${c.rejected ?? 0} rejected\n`,
+          c.review ?? 0
+        } review, ${c.complete ?? 0} complete, ${c.rejected ?? 0} rejected\n`,
       );
       for (const state of tq.TASK_STATES) {
         const stateEntries = entries.filter((e) => e.state === state);
@@ -546,18 +628,24 @@ async function main() {
       case "up": {
         checkUnknownFlags(
           args,
-          new Set(["--no-orchestrator", "--approval"]),
+          new Set([
+            "--no-orchestrator",
+            "--no-orchestrator-agent",
+            "--approval",
+          ]),
         );
         const orchestrator = !args.includes("--no-orchestrator");
+        const orchestratorAgent = !args.includes("--no-orchestrator-agent");
         const approval = parseApproval(args);
-        await up({ orchestrator, approval });
+        await up({ orchestrator, orchestratorAgent, approval });
         break;
       }
       case "down":
         await down();
         break;
       case "status":
-        await status();
+        checkUnknownFlags(args, new Set(["--json"]));
+        await status(args.includes("--json"));
         break;
       case "send": {
         const [worker, ...rest] = args;
