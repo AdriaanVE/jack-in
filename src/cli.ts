@@ -332,6 +332,16 @@ async function up(
   const orchAgentType = config.orchestrator.agent;
   const hasTasks = config.tasks && config.tasks.length > 0;
   if (opts.orchestratorAgent && orchAgentType && hasTasks) {
+    // Merge Claude settings into project root for orchestrator
+    if (orchAgentType === "claude") {
+      await daemon.mergeClaudeSettings(
+        base,
+        base,
+        "orchestrator",
+        config.orchestrator.approval,
+      );
+    }
+
     const instructionsPath = new URL(".", import.meta.url).pathname.replace(
       /\/src\/$/,
       "",

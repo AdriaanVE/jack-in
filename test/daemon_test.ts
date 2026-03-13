@@ -424,6 +424,98 @@ Deno.test("writeClaudeSettings shell-escapes paths with spaces", async () => {
   }
 });
 
+// --- mergeClaudeSettings ---
+
+Deno.test("mergeClaudeSettings creates settings when none exist", async () => {
+  const dir = await makeTempDir();
+  try {
+    await daemon.mergeClaudeSettings(dir, dir, "orchestrator", "auto");
+    const settings = JSON.parse(
+      await Deno.readTextFile(join(dir, ".claude", "settings.local.json")),
+    );
+    assertEquals(settings.permissions.allow.includes("Bash(jackops *)"), true);
+    assertEquals(settings.hooks.Stop.length, 1);
+    assertEquals(settings.hooks.PermissionRequest.length, 1);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("mergeClaudeSettings preserves existing permissions", async () => {
+  const dir = await makeTempDir();
+  try {
+    const settingsDir = join(dir, ".claude");
+    await Deno.mkdir(settingsDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(settingsDir, "settings.local.json"),
+      JSON.stringify({
+        permissions: { allow: ["Bash(git *)"] },
+      }),
+    );
+    await daemon.mergeClaudeSettings(dir, dir, "orchestrator");
+    const settings = JSON.parse(
+      await Deno.readTextFile(join(settingsDir, "settings.local.json")),
+    );
+    assertEquals(settings.permissions.allow.includes("Bash(git *)"), true);
+    assertEquals(settings.permissions.allow.includes("Bash(jackops *)"), true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("mergeClaudeSettings deduplicates jackops permission", async () => {
+  const dir = await makeTempDir();
+  try {
+    const settingsDir = join(dir, ".claude");
+    await Deno.mkdir(settingsDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(settingsDir, "settings.local.json"),
+      JSON.stringify({
+        permissions: { allow: ["Bash(jackops *)"] },
+      }),
+    );
+    await daemon.mergeClaudeSettings(dir, dir, "orchestrator");
+    const settings = JSON.parse(
+      await Deno.readTextFile(join(settingsDir, "settings.local.json")),
+    );
+    const count = settings.permissions.allow.filter(
+      (s: string) => s === "Bash(jackops *)",
+    ).length;
+    assertEquals(count, 1);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("mergeClaudeSettings preserves existing hooks", async () => {
+  const dir = await makeTempDir();
+  try {
+    const settingsDir = join(dir, ".claude");
+    await Deno.mkdir(settingsDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(settingsDir, "settings.local.json"),
+      JSON.stringify({
+        hooks: {
+          Stop: [{
+            matcher: "*",
+            hooks: [{ type: "command", command: "echo hi" }],
+          }],
+        },
+      }),
+    );
+    await daemon.mergeClaudeSettings(dir, dir, "orchestrator");
+    const settings = JSON.parse(
+      await Deno.readTextFile(join(settingsDir, "settings.local.json")),
+    );
+    // Should have both the existing hook and the jackops hook
+    assertEquals(settings.hooks.Stop.length, 2);
+    assertStringIncludes(settings.hooks.Stop[0].hooks[0].command, "echo hi");
+    assertStringIncludes(settings.hooks.Stop[1].hooks[0].command, "stop-hook");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 // --- formatTaskPrompt: no-confirmation instruction ---
 
 Deno.test("formatTaskPrompt includes no-confirmation instruction for Claude", () => {

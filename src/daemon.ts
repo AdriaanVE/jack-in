@@ -97,15 +97,13 @@ export async function initSignals(base: string): Promise<void> {
   }
 }
 
-/** Write Claude Code settings with Stop + optional PermissionRequest hooks. */
-export async function writeClaudeSettings(
-  worktreePath: string,
+/** Build jackops-specific Claude settings (hooks + permissions). */
+export function buildClaudeSettings(
   base: string,
   workerName: string,
   approval: ApprovalMode = "manual",
-): Promise<void> {
-  const settingsDir = join(worktreePath, ".claude");
-  await Deno.mkdir(settingsDir, { recursive: true });
+  // deno-lint-ignore no-explicit-any
+): { permissions: { allow: string[] }; hooks: Record<string, any[]> } {
   const jackopsDir = join(base, ".jackops");
   const stopHook = join(jackopsDir, "stop-hook.ts");
   const signalDir = join(base, SIGNAL_DIR);
@@ -158,18 +156,86 @@ export async function writeClaudeSettings(
   }
   // manual: no PermissionRequest hook — normal Claude permission dialog
 
-  const settings = {
-    permissions: {
-      allow: [
-        "Bash(jackops *)",
-      ],
-    },
+  return {
+    permissions: { allow: ["Bash(jackops *)"] },
     hooks,
   };
+}
+
+/** Write Claude Code settings.local.json (overwrites — use for worktrees). */
+export async function writeClaudeSettings(
+  worktreePath: string,
+  base: string,
+  workerName: string,
+  approval: ApprovalMode = "manual",
+): Promise<void> {
+  const settingsDir = join(worktreePath, ".claude");
+  await Deno.mkdir(settingsDir, { recursive: true });
+
+  const settings = buildClaudeSettings(base, workerName, approval);
 
   await Deno.writeTextFile(
     join(settingsDir, "settings.local.json"),
     JSON.stringify(settings, null, 2) + "\n",
+  );
+}
+
+/** Merge jackops settings into an existing settings.local.json (for project root). */
+export async function mergeClaudeSettings(
+  projectRoot: string,
+  base: string,
+  workerName: string,
+  approval: ApprovalMode = "manual",
+): Promise<void> {
+  const settingsDir = join(projectRoot, ".claude");
+  await Deno.mkdir(settingsDir, { recursive: true });
+  const settingsPath = join(settingsDir, "settings.local.json");
+
+  // Read existing settings if present
+  // deno-lint-ignore no-explicit-any
+  let existing: Record<string, any> = {};
+  try {
+    existing = JSON.parse(await Deno.readTextFile(settingsPath));
+  } catch {
+    // No existing file or invalid JSON — start fresh
+  }
+
+  const jackops = buildClaudeSettings(base, workerName, approval);
+
+  // Merge permissions.allow (deduplicate)
+  const existingAllow: string[] = existing.permissions?.allow ?? [];
+  const mergedAllow = [
+    ...new Set([...existingAllow, ...jackops.permissions.allow]),
+  ];
+  existing.permissions = { ...existing.permissions, allow: mergedAllow };
+
+  // Merge hooks (append jackops hooks to each event, avoiding duplicates)
+  if (!existing.hooks) existing.hooks = {};
+  for (const [event, entries] of Object.entries(jackops.hooks)) {
+    if (!existing.hooks[event]) {
+      existing.hooks[event] = entries;
+    } else {
+      // Replace any existing jackops stop-hook entries, then append new ones
+      const isJackopsHook = (
+        // deno-lint-ignore no-explicit-any
+        e: any,
+      ) =>
+        e.hooks?.some((h: { command?: string }) =>
+          h.command?.includes(".jackops/")
+        );
+      existing.hooks[event] = [
+        ...existing.hooks[event].filter(
+          // deno-lint-ignore no-explicit-any
+          (e: any) => !isJackopsHook(e),
+        ),
+        ...entries,
+      ];
+    }
+  }
+
+  await Deno.writeTextFile(
+    settingsPath,
+    JSON.stringify(existing, null, 2) + "\n",
   );
 }
 
