@@ -3,28 +3,37 @@
 import { join } from "@std/path";
 import { shellEscape } from "./agents.ts";
 import { type ApprovalMode, type Config, sessionName } from "./config.ts";
-import * as tmux from "./tmux.ts";
-import * as tq from "./task-queue.ts";
 import { evaluatePane } from "./llm.ts";
 import { getJackopsLogger } from "./log.ts";
+import { completionMarker } from "./marker.ts";
+import * as tq from "./task-queue.ts";
+import * as tmux from "./tmux.ts";
 
 const log = getJackopsLogger("daemon");
 
 const PROMPT_DIR = ".jackops/prompts";
 const SIGNAL_DIR = ".jackops/signals";
 const CURRENT_TASK_DIR = ".jackops/current-task";
-const STALL_TIMEOUT_MS = 60_000;
 // Grace period after task assignment before accepting completion signals.
 // The Claude Stop hook fires on every response turn, so early signals are
 // likely from the previous turn, not actual task completion.
 const MIN_WORK_MS = 10_000;
+// Tier 2: cheap pane-snapshot check starts after this threshold.
+export const TIER2_TIMEOUT_MS = 60_000;
+// Tier 3: expensive LLM evaluation starts after this threshold.
+export const TIER3_TIMEOUT_MS = 120_000;
+// Max consecutive LLM evals per task before giving up and notifying user.
+export const MAX_LLM_EVALS = 3;
 
 interface WorkerState {
   name: string;
   agent: string;
   currentTask: string | null;
   assignedAt: number | null;
-  lastStallCheck: number | null;
+  lastPaneSnapshot: string | null;
+  lastSnapshotAt: number | null;
+  llmEvalCount: number;
+  escalatedToUser: boolean;
 }
 
 // --- Signal file helpers ---
@@ -155,13 +164,11 @@ export async function writeClaudeSettings(
   );
 }
 
-// --- Completion marker ---
-
-export const COMPLETION_MARKER_PREFIX = "JACKOPS_TASK_COMPLETE:";
-
-export function completionMarker(taskId: string): string {
-  return `${COMPLETION_MARKER_PREFIX}${taskId}`;
-}
+// Re-export marker utilities for backward compatibility
+export {
+  completionMarker,
+  MARKER_PREFIX as COMPLETION_MARKER_PREFIX,
+} from "./marker.ts";
 
 // --- Current-task file helpers ---
 
@@ -231,11 +238,15 @@ export function formatTaskPrompt(
     );
     lines.push(marker);
   } else {
-    // Non-Claude agents need to signal completion themselves
+    // Non-Claude agents: touch signal file + output marker for daemon-side scan
     const sig = signalPath(base, workerName);
+    const marker = completionMarker(task.id);
     lines.push("");
     lines.push(
       `IMPORTANT: When you are completely done with this task, run: touch ${sig}`,
+    );
+    lines.push(
+      `Also output exactly this on its own line: ${marker}`,
     );
   }
   lines.push("");
@@ -321,7 +332,10 @@ export async function run(opts: DaemonOptions): Promise<void> {
         agent: w.agent,
         currentTask: null,
         assignedAt: null,
-        lastStallCheck: null,
+        lastPaneSnapshot: null,
+        lastSnapshotAt: null,
+        llmEvalCount: 0,
+        escalatedToUser: false,
       });
     }
   }
@@ -425,7 +439,7 @@ async function tick(
 ): Promise<void> {
   const now = Date.now();
   const idleWorkers: WorkerState[] = [];
-  const stallChecks: Promise<void>[] = [];
+  const watchdogChecks: Promise<void>[] = [];
 
   for (const [, state] of workers) {
     const signaled = await hasSignal(base, state.name);
@@ -445,8 +459,9 @@ async function tick(
         continue;
       }
       // Worker finished its task
+      markComplete(state, idleWorkers);
       try {
-        await tq.review(base, state.currentTask);
+        await tq.review(base, state.currentTask!);
         log
           .info`[review] ${state.name} finished ${state.currentTask}, sent to review`;
       } catch (e) {
@@ -456,28 +471,22 @@ async function tick(
       }
       await clearCurrentTask(base, state.name);
       state.currentTask = null;
-      state.assignedAt = null;
-      state.lastStallCheck = null;
-      idleWorkers.push(state);
     } else if (!state.currentTask && signaled) {
       // Worker is idle and ready
       idleWorkers.push(state);
     } else if (
       state.currentTask && !signaled &&
       state.assignedAt &&
-      now - state.assignedAt > STALL_TIMEOUT_MS &&
-      (!state.lastStallCheck || now - state.lastStallCheck > STALL_TIMEOUT_MS)
+      now - state.assignedAt > TIER2_TIMEOUT_MS
     ) {
-      // Worker may be stuck on a permission prompt or asking for confirmation
-      log.debug`${state.name}: possible stall detected (${
-        now - state.assignedAt
-      }ms since assignment)`;
-      state.lastStallCheck = now;
-      stallChecks.push(checkStalled(session, state, base, approval));
+      // Tiered watchdog for workers that haven't signaled
+      watchdogChecks.push(
+        watchdog(session, state, base, approval, now),
+      );
     }
   }
 
-  if (stallChecks.length > 0) await Promise.all(stallChecks);
+  if (watchdogChecks.length > 0) await Promise.all(watchdogChecks);
 
   // Assign ready tasks to idle workers
   if (idleWorkers.length === 0) {
@@ -523,7 +532,7 @@ async function tick(
 
     state.currentTask = task.id;
     state.assignedAt = now;
-    state.lastStallCheck = null;
+    resetWatchdog(state);
     log.info`[assign] ${task.id} -> ${state.name}: ${task.summary}`;
     taskIdx++;
   }
@@ -531,36 +540,131 @@ async function tick(
   printStatus(workers);
 }
 
-async function checkStalled(
+/** Reset watchdog-related fields on a worker. */
+function resetWatchdog(state: WorkerState): void {
+  state.lastPaneSnapshot = null;
+  state.lastSnapshotAt = null;
+  state.llmEvalCount = 0;
+  state.escalatedToUser = false;
+}
+
+/** Reset worker state fields when a task completes. */
+function markComplete(state: WorkerState, idleWorkers: WorkerState[]): void {
+  state.assignedAt = null;
+  resetWatchdog(state);
+  idleWorkers.push(state);
+}
+
+/** Check if pane content contains the completion marker for the given task. */
+export function paneContainsMarker(
+  paneContent: string,
+  taskId: string,
+): boolean {
+  return paneContent.includes(completionMarker(taskId));
+}
+
+/** Tiered watchdog: cheap pane check first, then LLM eval with guardrails. */
+async function watchdog(
   session: string,
   state: WorkerState,
   base: string,
   approval: ApprovalMode,
+  now: number,
 ): Promise<void> {
   const target = `${session}:${state.name}`;
   let paneContent: string;
   try {
-    paneContent = await tmux.capturePane(target, 30);
+    paneContent = await tmux.capturePane(target, 50);
   } catch {
     return; // Pane gone or inaccessible
   }
 
+  // --- Daemon-side marker scan (runs every tick, independent of tiers) ---
+  if (state.currentTask && paneContainsMarker(paneContent, state.currentTask)) {
+    log
+      .info`[marker-scan] ${state.name}: found completion marker in pane for ${state.currentTask}, creating signal`;
+    try {
+      const sig = signalPath(base, state.name);
+      await Deno.writeTextFile(sig, "");
+    } catch (e) {
+      log.warn`[marker-scan] Failed to write signal for ${state.name}: ${
+        e instanceof Error ? e.message : e
+      }`;
+    }
+    return;
+  }
+
+  // --- Tier 2: pane snapshot diff (TIER2 - TIER3 window) ---
+  const elapsed = now - (state.assignedAt ?? now);
+  if (elapsed < TIER3_TIMEOUT_MS) {
+    const prevSnapshot = state.lastPaneSnapshot;
+    state.lastPaneSnapshot = paneContent;
+    state.lastSnapshotAt = now;
+
+    if (prevSnapshot === null) {
+      log.debug`${state.name}: tier2 — first snapshot captured`;
+      return;
+    }
+
+    if (prevSnapshot === paneContent) {
+      // Pane is unchanged — agent is idle
+      log
+        .info`[tier2-idle] ${state.name}: pane unchanged, nudging for marker`;
+      const marker = completionMarker(state.currentTask!);
+      const nudge =
+        `If you have completed your task, output exactly this on its own line: ${marker}`;
+      try {
+        await tmux.sendKeys(target, nudge);
+      } catch {
+        // pane may be gone
+      }
+    } else {
+      log.debug`${state.name}: tier2 — pane changed, agent still active`;
+    }
+    return;
+  }
+
+  // --- Tier 3: LLM evaluation with guardrails ---
+  // Keep updating snapshot for continuity
+  state.lastPaneSnapshot = paneContent;
+  state.lastSnapshotAt = now;
+
+  if (state.escalatedToUser) {
+    log.debug`${state.name}: already escalated to user, skipping`;
+    return;
+  }
+
+  if (state.llmEvalCount >= MAX_LLM_EVALS) {
+    log
+      .warn`[tier3-escalate] ${state.name}: ${MAX_LLM_EVALS} LLM evals exhausted, notifying user`;
+    state.escalatedToUser = true;
+    try {
+      await tmux.displayMessage(
+        session,
+        `JACKOPS: ${state.name} may be stuck - ${MAX_LLM_EVALS} checks failed, needs manual attention`,
+      );
+    } catch {
+      // display-message may fail if no client attached
+    }
+    return;
+  }
+
   if (approval === "yolo") {
-    // Approve blindly — send Enter to dismiss any prompt
     log.info`[yolo-approve] ${state.name}: sending Enter`;
-    log.debug`${state.name}: pane content (last 30 lines):\n${paneContent}`;
+    log.debug`${state.name}: pane content (last 50 lines):\n${paneContent}`;
     try {
       await tmux.sendKeys(target, "", true);
     } catch {
       // pane may be gone
     }
+    state.llmEvalCount++;
     return;
   }
 
   if (approval === "manual") {
-    // Notify only, don't evaluate or approve
     log.info`[stall-detected] ${state.name}: may need attention`;
-    log.debug`${state.name}: pane content (last 30 lines):\n${paneContent}`;
+    log.debug`${state.name}: pane content (last 50 lines):\n${paneContent}`;
+    state.escalatedToUser = true;
     try {
       await tmux.displayMessage(
         session,
@@ -572,8 +676,10 @@ async function checkStalled(
     return;
   }
 
-  // approval === "auto" — LLM evaluation
-  log.info`[stall-check] Evaluating ${state.name} via LLM...`;
+  // approval === "auto" — LLM evaluation (no auto-respond, only permission prompts)
+  state.llmEvalCount++;
+  log
+    .info`[tier3-eval] Evaluating ${state.name} via LLM (${state.llmEvalCount}/${MAX_LLM_EVALS})...`;
   log.debug`${state.name}: pane content for LLM eval:\n${paneContent}`;
 
   let taskSummary = "unknown task";
@@ -589,8 +695,8 @@ async function checkStalled(
       state.agent,
     );
     log
-      .info`[stall-result] ${state.name}: status=${result.status} safe=${result.safe_to_approve} action=${
-      result.approval_keystroke || result.response_text || "none"
+      .info`[tier3-result] ${state.name}: status=${result.status} safe=${result.safe_to_approve} action=${
+      result.approval_keystroke || "none"
     } reason=${result.reason}`;
 
     if (result.status === "permission_prompt") {
@@ -603,6 +709,7 @@ async function checkStalled(
         }
       } else {
         log.info`[needs-attention] ${state.name}: ${result.reason}`;
+        state.escalatedToUser = true;
         try {
           const msg =
             `JACKOPS: ${state.name} needs approval - ${result.reason}`;
@@ -611,15 +718,9 @@ async function checkStalled(
           // display-message may fail if no client attached
         }
       }
-    } else if (result.status === "waiting_for_input" && result.response_text) {
-      log.info`[auto-respond] ${state.name}: sending "${result.response_text}"`;
-      try {
-        await tmux.sendKeys(target, result.response_text);
-      } catch {
-        // pane may be gone
-      }
     } else if (result.status === "error") {
       log.info`[error-detected] ${state.name}: ${result.reason}`;
+      state.escalatedToUser = true;
       try {
         const msg = `JACKOPS: ${state.name} hit an error - ${result.reason}`;
         await tmux.displayMessage(session, msg);

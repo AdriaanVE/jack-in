@@ -13,7 +13,7 @@
  * The current task ID is read from <current_task_dir>/<worker_name>.
  */
 
-const MARKER_PREFIX = "JACKOPS_TASK_COMPLETE:";
+import { hasCompletionMarker } from "../src/marker.ts";
 
 // --- Read stdin JSON ---
 
@@ -65,17 +65,6 @@ function extractLastAssistantText(lines: string[]): string | null {
     return textParts.length > 0 ? textParts.join("\n") : null;
   }
   return null;
-}
-
-function hasCompletionMarker(text: string, taskId: string): boolean {
-  const expected = `${MARKER_PREFIX}${taskId}`;
-  // Find the last non-empty line
-  const lines = text.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const trimmed = lines[i].trim();
-    if (trimmed) return trimmed === expected;
-  }
-  return false;
 }
 
 // --- Main ---

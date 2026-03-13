@@ -17,12 +17,10 @@ export interface PaneEvaluation {
   status:
     | "working"
     | "permission_prompt"
-    | "waiting_for_input"
     | "error"
     | "idle";
   safe_to_approve: boolean;
   approval_keystroke: string;
-  response_text: string;
   reason: string;
 }
 
@@ -67,12 +65,11 @@ const PANE_EVAL_TOOL = {
         enum: [
           "working",
           "permission_prompt",
-          "waiting_for_input",
           "error",
           "idle",
         ],
         description:
-          "working = agent is actively processing; permission_prompt = agent is waiting for user approval of a specific action; waiting_for_input = agent is asking a question or waiting for user to confirm an approach; error = agent hit an error; idle = agent is at prompt with nothing to do",
+          "working = agent is actively processing; permission_prompt = agent is waiting for user approval of a specific action (tool use, file access, shell command); error = agent hit an error; idle = agent is at prompt with nothing to do",
       },
       safe_to_approve: {
         type: "boolean",
@@ -84,11 +81,6 @@ const PANE_EVAL_TOOL = {
         description:
           "Keystroke to send to approve the prompt (e.g., 'Enter', 'y', 'Y', '1'). Only relevant when status=permission_prompt and safe_to_approve=true",
       },
-      response_text: {
-        type: "string",
-        description:
-          "Text message to send when status=waiting_for_input. Should be a short, direct instruction to unblock the agent (e.g., 'yes, proceed', 'go ahead'). Empty string when not applicable.",
-      },
       reason: {
         type: "string",
         description: "Brief explanation of the assessment",
@@ -98,7 +90,6 @@ const PANE_EVAL_TOOL = {
       "status",
       "safe_to_approve",
       "approval_keystroke",
-      "response_text",
       "reason",
     ],
   },
@@ -168,12 +159,12 @@ Determine the agent's current state and what action to take.
 Statuses:
 - working: agent is actively processing, no action needed
 - permission_prompt: agent is waiting for approval of a specific action (tool use, file access, shell command)
-- waiting_for_input: agent asked a question or is waiting for confirmation to proceed with an approach
-- error: agent hit an error
+- error: agent hit an error and is not making progress
 - idle: agent is at prompt with nothing to do
 
+IMPORTANT: You can ONLY approve permission prompts. You must NEVER send freeform text, commands, or instructions to the agent. Your only actions are: approve a permission prompt, or report status.
+
 For permission_prompt: evaluate safety and provide approval_keystroke if safe.
-For waiting_for_input: provide a short response_text to unblock the agent (e.g., "yes, proceed", "go ahead with that approach").
 
 Safety rules:
 - File reads, writes, and non-destructive shell commands are SAFE to approve
@@ -200,7 +191,6 @@ ${paneContent}
   const VALID_STATUSES = new Set([
     "working",
     "permission_prompt",
-    "waiting_for_input",
     "error",
     "idle",
   ]);
@@ -212,7 +202,6 @@ ${paneContent}
       : "working",
     safe_to_approve: result.safe_to_approve === true,
     approval_keystroke: (result.approval_keystroke as string) ?? "",
-    response_text: (result.response_text as string) ?? "",
     reason: (result.reason as string) ?? "",
   };
 }

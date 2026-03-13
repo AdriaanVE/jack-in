@@ -157,10 +157,10 @@ Deno.test("formatTaskPrompt Claude gets marker not touch instruction", () => {
   assertEquals(result.includes("touch /base/.jackops/signals"), false);
 });
 
-Deno.test("formatTaskPrompt non-Claude gets touch not marker", () => {
+Deno.test("formatTaskPrompt non-Claude gets touch and marker", () => {
   const result = daemon.formatTaskPrompt(TASK_FULL, "w1", "codex", "/base");
   assertStringIncludes(result, "touch /base/.jackops/signals/w1.done");
-  assertEquals(result.includes("JACKOPS_TASK_COMPLETE:"), false);
+  assertStringIncludes(result, "JACKOPS_TASK_COMPLETE:task-001");
 });
 
 // --- completionMarker ---
@@ -478,4 +478,44 @@ Deno.test("unclaim fails for task not in current", async () => {
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+// --- paneContainsMarker ---
+
+Deno.test("paneContainsMarker detects marker in pane content", () => {
+  const pane = `Some output here
+JACKOPS_TASK_COMPLETE:task-001
+>`;
+  assertEquals(daemon.paneContainsMarker(pane, "task-001"), true);
+});
+
+Deno.test("paneContainsMarker returns false for different task ID", () => {
+  const pane = `Some output here
+JACKOPS_TASK_COMPLETE:task-001
+>`;
+  assertEquals(daemon.paneContainsMarker(pane, "task-002"), false);
+});
+
+Deno.test("paneContainsMarker returns false when no marker present", () => {
+  const pane = `Agent is working...
+> some command output`;
+  assertEquals(daemon.paneContainsMarker(pane, "task-001"), false);
+});
+
+Deno.test("paneContainsMarker detects marker surrounded by other text", () => {
+  const pane = `lots of output
+here is JACKOPS_TASK_COMPLETE:task-abc inline
+more output`;
+  assertEquals(daemon.paneContainsMarker(pane, "task-abc"), true);
+});
+
+// --- tier constants ---
+
+Deno.test("TIER2_TIMEOUT_MS < TIER3_TIMEOUT_MS", () => {
+  assertEquals(daemon.TIER2_TIMEOUT_MS < daemon.TIER3_TIMEOUT_MS, true);
+});
+
+Deno.test("MAX_LLM_EVALS is a positive integer", () => {
+  assertEquals(daemon.MAX_LLM_EVALS > 0, true);
+  assertEquals(Number.isInteger(daemon.MAX_LLM_EVALS), true);
 });
