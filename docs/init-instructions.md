@@ -216,9 +216,10 @@ Then tell the user:
 
 - The swarm is running
 - The orchestrator agent is managing tasks in the `orchestrator` tmux window
-- They can watch it with: `jackops attach orchestrator`
 - They can check status anytime with: `jackops status`
 - Your initialization job is done
+- When `jackops up` runs, this init session will be killed automatically and
+  they will be switched to the orchestrator agent's tmux window
 
 ## Agent skill installation
 

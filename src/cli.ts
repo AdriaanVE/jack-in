@@ -361,7 +361,11 @@ async function up(
     );
   }
 
-  await tmux.selectWindow(session, "dashboard");
+  // Select orchestrator window if it was spawned, otherwise dashboard
+  const defaultWindow = (opts.orchestratorAgent && orchAgentType && hasTasks)
+    ? "orchestrator"
+    : "dashboard";
+  await tmux.selectWindow(session, defaultWindow);
 
   // Clean up init session if it exists
   if (await tmux.hasSession(INIT_SESSION)) {
