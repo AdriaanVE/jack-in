@@ -31,6 +31,7 @@ workers:
 orchestrator:
   poll_interval: 5000 # ms (default)
   max_retries: 2 # default
+  agent: claude # LLM orchestrator agent (reviews work, approves/rejects tasks)
 tasks:
   - summary: "Document the auth module"
   - summary: "Refactor database layer"
@@ -47,11 +48,15 @@ Then:
 jackops up              # spawn workers in tmux + worktrees
 jackops daemon          # start orchestrator (assign tasks, monitor workers)
 jackops status          # show worker status
+jackops status --json   # structured status for the orchestrator agent
 jackops send scout "focus on the auth module"
 jackops attach scout    # switch to worker's tmux window
 jackops tasks           # list all tasks and counts
 jackops tasks init      # create task queue directories
 jackops tasks add "implement auth module"
+jackops tasks complete <id>   # force current -> review (unstick)
+jackops tasks approve <id>    # approve a reviewed task
+jackops tasks reject <id> <feedback>  # reject with feedback
 jackops down            # kill session and clean worktrees
 ```
 
@@ -146,12 +151,14 @@ Filesystem-based task queue shared across worktrees:
 tasks/
   pending/     # unclaimed tasks
   current/     # in progress (claimed by a worker)
-  complete/    # done
-  rejected/    # failed review
+  review/      # awaiting orchestrator review
+  complete/    # approved
+  rejected/    # failed review (will be retried)
 ```
 
-Workers claim tasks by moving files. Planners create tasks. Executors consume
-them. Simple, no database, inspectable with `ls`.
+Workers claim tasks by moving files. The daemon moves completed tasks to
+`review/`. The orchestrator agent reviews diffs and approves or rejects. Simple,
+no database, inspectable with `ls`.
 
 ### Phase 3: Review cycle
 

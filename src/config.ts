@@ -31,7 +31,8 @@ export interface OrchestratorConfig {
   poll_interval: number;
   max_retries: number;
   approval: ApprovalMode;
-  agent: boolean;
+  /** Agent type for the LLM orchestrator, or false to disable. */
+  agent: AgentType | false;
 }
 
 export interface TaskConfig {
@@ -173,7 +174,7 @@ export async function loadConfig(path: string): Promise<Config> {
     poll_interval: 5000,
     max_retries: 2,
     approval: "manual",
-    agent: true,
+    agent: "claude",
   };
   if (raw.orchestrator && typeof raw.orchestrator === "object") {
     const o = raw.orchestrator as Record<string, unknown>;
@@ -193,7 +194,16 @@ export async function loadConfig(path: string): Promise<Config> {
       }
       orchestrator.approval = o.approval as ApprovalMode;
     }
-    if (typeof o.agent === "boolean") {
+    if (o.agent === false) {
+      orchestrator.agent = false;
+    } else if (typeof o.agent === "string") {
+      if (!isAgentType(o.agent)) {
+        throw new Error(
+          `Invalid orchestrator 'agent': must be one of: ${
+            AGENT_NAMES.join(", ")
+          }, or false`,
+        );
+      }
       orchestrator.agent = o.agent;
     }
   }

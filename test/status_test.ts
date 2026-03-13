@@ -26,7 +26,7 @@ const testConfig: Config = {
     poll_interval: 5000,
     max_retries: 2,
     approval: "manual",
-    agent: true,
+    agent: "claude",
   },
   startup_instructions: null,
 };

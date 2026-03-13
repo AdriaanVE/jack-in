@@ -10,7 +10,6 @@ import {
 import * as tmux from "./tmux.ts";
 import * as worktree from "./worktree.ts";
 import {
-  detectAgents,
   initCommand,
   isAgentType,
   shellEscape,
@@ -61,6 +60,7 @@ Usage:
   jackops daemon [options]          Start the orchestrator daemon
   jackops tasks                     List all tasks
   jackops tasks add <summary>       Add a task to the queue
+  jackops tasks complete <id>       Force a current task to review
   jackops tasks approve <id>        Approve a reviewed task
   jackops tasks reject <id> <msg>   Reject a reviewed task with feedback
   jackops tasks init                Initialize task queue directories
@@ -329,44 +329,36 @@ async function up(
   }
 
   // Spawn orchestrator LLM agent if enabled and tasks exist
+  const orchAgentType = config.orchestrator.agent;
   const hasTasks = config.tasks && config.tasks.length > 0;
-  if (opts.orchestratorAgent && config.orchestrator.agent && hasTasks) {
-    const agents = await detectAgents();
-    const orchestratorAgent = agents.find((a) => a.agent === "claude") ??
-      agents[0];
-    if (orchestratorAgent) {
-      const instructionsPath = new URL(".", import.meta.url).pathname.replace(
-        /\/src\/$/,
-        "",
-      ) + "/docs/orchestrator-instructions.md";
-      const promptPath = join(base, ".jackops", "orchestrator-prompt.md");
-      const instructions = await Deno.readTextFile(instructionsPath);
-      const orchPrompt = [
-        instructions,
-        "",
-        `## Current status`,
-        "",
-        `Run \`jackops status --json\` to get the current swarm state. The project root is: ${base}`,
-        "",
-        `Worker worktrees are at: ${
-          config.workers.map((w) =>
-            join(base, worktree.worktreeDir(config.project, w.name))
-          ).join(", ")
-        }`,
-      ].join("\n");
-      await Deno.writeTextFile(promptPath, orchPrompt);
-      await tmux.createWindow(session, "orchestrator");
-      const orchTarget = `${session}:orchestrator`;
-      const cmd = initCommand(orchestratorAgent.agent, promptPath);
-      await tmux.sendKeys(orchTarget, `cd ${shellEscape(base)} && ${cmd}`);
-      console.log(
-        `Orchestrator agent (${orchestratorAgent.agent}) started in 'orchestrator' window.`,
-      );
-    } else {
-      console.log(
-        "No agent CLI found for orchestrator agent. Skipping (daemon still runs).",
-      );
-    }
+  if (opts.orchestratorAgent && orchAgentType && hasTasks) {
+    const instructionsPath = new URL(".", import.meta.url).pathname.replace(
+      /\/src\/$/,
+      "",
+    ) + "/docs/orchestrator-instructions.md";
+    const promptPath = join(base, ".jackops", "orchestrator-prompt.md");
+    const instructions = await Deno.readTextFile(instructionsPath);
+    const orchPrompt = [
+      instructions,
+      "",
+      `## Current status`,
+      "",
+      `Run \`jackops status --json\` to get the current swarm state. The project root is: ${base}`,
+      "",
+      `Worker worktrees are at: ${
+        config.workers.map((w) =>
+          join(base, worktree.worktreeDir(config.project, w.name))
+        ).join(", ")
+      }`,
+    ].join("\n");
+    await Deno.writeTextFile(promptPath, orchPrompt);
+    await tmux.createWindow(session, "orchestrator");
+    const orchTarget = `${session}:orchestrator`;
+    const cmd = initCommand(orchAgentType, promptPath);
+    await tmux.sendKeys(orchTarget, `cd ${shellEscape(base)} && ${cmd}`);
+    console.log(
+      `Orchestrator agent (${orchAgentType}) started in 'orchestrator' window.`,
+    );
   }
 
   await tmux.selectWindow(session, "dashboard");
@@ -545,6 +537,16 @@ async function tasks(subcommand: string | undefined, args: string[]) {
       const id = tq.generateId();
       const task = await tq.create(base, { id, summary, description });
       console.log(`Created ${task.id}: ${task.summary}`);
+      break;
+    }
+    case "complete": {
+      const [taskId] = args;
+      if (!taskId) {
+        console.error("Usage: jackops tasks complete <id>");
+        Deno.exit(1);
+      }
+      await tq.review(base, taskId);
+      console.log(`Moved ${taskId} to review.`);
       break;
     }
     case "approve": {
