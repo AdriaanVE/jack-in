@@ -222,12 +222,12 @@ Then tell the user:
 
 ## Agent skill installation
 
-After writing the config, offer to install the jackops CLI skill so that agents
-working in this repo know how to use jackops commands. The full skill content is
+After writing the config, install the jackops CLI skill so that agents working
+in this repo know how to use jackops commands. The full skill content is
 provided below between `--- SKILL START ---` and `--- SKILL END ---` markers.
 
-Where to put it is up to you -- pick the location that makes sense for the
-agents the user chose (e.g., a skill file, an AGENTS.md, a project doc). Ask the
-user where they want it if you are unsure.
+Write the skill to `.claude/skills/jackops/SKILL.md` in the project root. If
+this file already exists, **overwrite it** -- it may be outdated from a previous
+init run and should always match the current version.
 
 --- SKILL START --- {SKILL_CONTENT} --- SKILL END ---
