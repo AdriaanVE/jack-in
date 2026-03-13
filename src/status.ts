@@ -116,6 +116,7 @@ export interface StatusInfo {
   daemon: DaemonStatus;
   tasks: TaskCounts | null;
   autoApprovalModel?: string | null;
+  runtimeApproval?: ApprovalMode | null;
 }
 
 export interface JsonStatus {
@@ -146,7 +147,7 @@ export function formatStatus(config: Config, info: StatusInfo): string {
   const { statuses, startedEpoch, daemon, tasks } = info;
   const lines: string[] = [];
   const session = sessionName(config.project);
-  const approval = config.orchestrator.approval;
+  const approval = info.runtimeApproval ?? config.orchestrator.approval;
 
   // Header
   const header = startedEpoch

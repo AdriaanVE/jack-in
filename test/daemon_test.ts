@@ -629,3 +629,107 @@ Deno.test("MAX_LLM_EVALS is a positive integer", () => {
   assertEquals(daemon.MAX_LLM_EVALS > 0, true);
   assertEquals(Number.isInteger(daemon.MAX_LLM_EVALS), true);
 });
+
+// --- approval mode file ---
+
+Deno.test("readApprovalMode returns null when no file exists", async () => {
+  const dir = await makeTempDir();
+  try {
+    assertEquals(await daemon.readApprovalMode(dir), null);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("writeApprovalMode + readApprovalMode round-trip", async () => {
+  const dir = await makeTempDir();
+  try {
+    await daemon.writeApprovalMode(dir, "yolo");
+    assertEquals(await daemon.readApprovalMode(dir), "yolo");
+    await daemon.writeApprovalMode(dir, "manual");
+    assertEquals(await daemon.readApprovalMode(dir), "manual");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("readApprovalMode ignores invalid mode", async () => {
+  const dir = await makeTempDir();
+  try {
+    await Deno.mkdir(join(dir, ".jackops"), { recursive: true });
+    await Deno.writeTextFile(
+      join(dir, daemon.APPROVAL_MODE_FILE),
+      "invalid\n",
+    );
+    assertEquals(await daemon.readApprovalMode(dir), null);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// --- mergeClaudeSettings removes stale hooks ---
+
+Deno.test("mergeClaudeSettings removes PermissionRequest when switching to manual", async () => {
+  const dir = await makeTempDir();
+  try {
+    // First merge with auto (adds PermissionRequest)
+    await daemon.mergeClaudeSettings(dir, dir, "orchestrator", "auto");
+    let settings = JSON.parse(
+      await Deno.readTextFile(join(dir, ".claude", "settings.local.json")),
+    );
+    assertEquals(settings.hooks.PermissionRequest !== undefined, true);
+
+    // Now merge with manual (should remove PermissionRequest)
+    await daemon.mergeClaudeSettings(dir, dir, "orchestrator", "manual");
+    settings = JSON.parse(
+      await Deno.readTextFile(join(dir, ".claude", "settings.local.json")),
+    );
+    assertEquals(settings.hooks.PermissionRequest, undefined);
+    // Stop hook should still be there
+    assertEquals(settings.hooks.Stop.length, 1);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("mergeClaudeSettings preserves non-jackops PermissionRequest hooks", async () => {
+  const dir = await makeTempDir();
+  try {
+    const settingsDir = join(dir, ".claude");
+    await Deno.mkdir(settingsDir, { recursive: true });
+    // Write settings with a user's own PermissionRequest hook + jackops auto hook
+    await Deno.writeTextFile(
+      join(settingsDir, "settings.local.json"),
+      JSON.stringify({
+        hooks: {
+          PermissionRequest: [
+            {
+              matcher: "*",
+              hooks: [{ type: "command", command: "my-custom-hook.sh" }],
+            },
+            {
+              matcher: "*",
+              hooks: [{
+                type: "command",
+                command: "/path/.jackops/yolo-approve.sh",
+              }],
+            },
+          ],
+        },
+      }),
+    );
+
+    // Switch to manual — should remove jackops hook but keep user hook
+    await daemon.mergeClaudeSettings(dir, dir, "orchestrator", "manual");
+    const settings = JSON.parse(
+      await Deno.readTextFile(join(settingsDir, "settings.local.json")),
+    );
+    assertEquals(settings.hooks.PermissionRequest.length, 1);
+    assertStringIncludes(
+      settings.hooks.PermissionRequest[0].hooks[0].command,
+      "my-custom-hook.sh",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

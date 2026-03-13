@@ -16,6 +16,10 @@ export interface WorkerConfig {
 export type ApprovalMode = "manual" | "auto" | "yolo";
 export const APPROVAL_MODES: ApprovalMode[] = ["manual", "auto", "yolo"];
 
+export function isApprovalMode(value: string): value is ApprovalMode {
+  return APPROVAL_MODES.includes(value as ApprovalMode);
+}
+
 export interface StartupInstructions {
   default: string;
   codex: string;

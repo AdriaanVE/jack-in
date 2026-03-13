@@ -4,6 +4,7 @@ import { join } from "@std/path";
 import {
   APPROVAL_MODES,
   type ApprovalMode,
+  isApprovalMode,
   loadConfig,
   sessionName,
 } from "./config.ts";
@@ -55,6 +56,7 @@ Usage:
   jackops up [options]               Spawn workers + start orchestrator daemon
   jackops down                      Kill session and clean up worktrees
   jackops status [--json]           Show worker status
+  jackops approval [<mode>]         Show or switch approval mode (manual|auto|yolo)
   jackops send <worker> <message>   Send a message to a worker
   jackops attach <worker>           Switch to a worker's tmux window
   jackops daemon [options]          Start the orchestrator daemon
@@ -459,18 +461,26 @@ async function status(json = false) {
   const configPath = await findConfig();
   const config = await loadConfig(configPath);
   const base = Deno.cwd();
-  const [{ workers: statuses, daemon }, startedEpoch, tasks] = await Promise
+  const [
+    { workers: statuses, daemon: dm },
+    startedEpoch,
+    tasks,
+    runtimeApproval,
+  ] = await Promise
     .all([
       getStatus(config, base),
       getSessionStarted(config),
       tq.counts(base),
+      daemon.readApprovalMode(base),
     ]);
+  const effectiveApproval = runtimeApproval ?? config.orchestrator.approval;
   const info = {
     statuses,
     startedEpoch,
-    daemon,
+    daemon: dm,
     tasks,
-    autoApprovalModel: config.orchestrator.approval === "auto"
+    runtimeApproval,
+    autoApprovalModel: effectiveApproval === "auto"
       ? (Deno.env.get("ANTHROPIC_DEFAULT_SONNET_MODEL") ??
         "claude-sonnet-4-5")
       : undefined,
@@ -632,6 +642,66 @@ async function tasks(subcommand: string | undefined, args: string[]) {
   }
 }
 
+async function approval(mode?: string) {
+  const base = Deno.cwd();
+  const configPath = await findConfig();
+  const config = await loadConfig(configPath);
+
+  if (!mode) {
+    // Show current mode
+    const runtime = await daemon.readApprovalMode(base);
+    const current = runtime ?? config.orchestrator.approval;
+    const source = runtime ? "runtime" : "config";
+    console.log(`Approval mode: ${current} (${source})`);
+    return;
+  }
+
+  if (!isApprovalMode(mode)) {
+    console.error(
+      `Invalid approval mode '${mode}'. Must be one of: ${
+        APPROVAL_MODES.join(", ")
+      }`,
+    );
+    Deno.exit(1);
+  }
+
+  // Rewrite Claude settings for each Claude worker
+  const switched: string[] = [];
+  const skipped: string[] = [];
+
+  for (const w of config.workers) {
+    if (w.agent === "claude") {
+      const wt = join(
+        base,
+        worktree.worktreeDir(config.project, w.name),
+      );
+      await daemon.writeClaudeSettings(wt, base, w.name, mode);
+      switched.push(w.name);
+    } else {
+      skipped.push(`${w.name} (${w.agent})`);
+    }
+  }
+
+  // Update orchestrator settings if Claude
+  if (config.orchestrator.agent === "claude") {
+    await daemon.mergeClaudeSettings(base, base, "orchestrator", mode);
+    switched.push("orchestrator");
+  }
+
+  // Write runtime mode file for daemon
+  await daemon.writeApprovalMode(base, mode);
+
+  console.log(`Approval mode switched to: ${mode}`);
+  if (switched.length > 0) {
+    console.log(`  Updated: ${switched.join(", ")}`);
+  }
+  if (skipped.length > 0) {
+    console.log(
+      `  Skipped (no live switching): ${skipped.join(", ")}`,
+    );
+  }
+}
+
 // --- Main ---
 
 async function main() {
@@ -683,6 +753,11 @@ async function main() {
         checkUnknownFlags(args, new Set(["--json"]));
         await status(args.includes("--json"));
         break;
+      case "approval": {
+        const [modeArg] = args;
+        await approval(modeArg);
+        break;
+      }
       case "send": {
         const [worker, ...rest] = args;
         if (!worker || rest.length === 0) {

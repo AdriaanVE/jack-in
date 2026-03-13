@@ -2,7 +2,12 @@
 
 import { join } from "@std/path";
 import { shellEscape } from "./agents.ts";
-import { type ApprovalMode, type Config, sessionName } from "./config.ts";
+import {
+  type ApprovalMode,
+  type Config,
+  isApprovalMode,
+  sessionName,
+} from "./config.ts";
 import { evaluatePane } from "./llm.ts";
 import { getJackopsLogger } from "./log.ts";
 import { completionMarker } from "./marker.ts";
@@ -14,6 +19,7 @@ const log = getJackopsLogger("daemon");
 const PROMPT_DIR = ".jackops/prompts";
 const SIGNAL_DIR = ".jackops/signals";
 const CURRENT_TASK_DIR = ".jackops/current-task";
+export const APPROVAL_MODE_FILE = ".jackops/approval-mode";
 // Grace period after task assignment before accepting completion signals.
 // The Claude Stop hook fires on every response turn, so early signals are
 // likely from the previous turn, not actual task completion.
@@ -173,11 +179,9 @@ export async function writeClaudeSettings(
   await Deno.mkdir(settingsDir, { recursive: true });
 
   const settings = buildClaudeSettings(base, workerName, approval);
+  const settingsPath = join(settingsDir, "settings.local.json");
 
-  await Deno.writeTextFile(
-    join(settingsDir, "settings.local.json"),
-    JSON.stringify(settings, null, 2) + "\n",
-  );
+  await atomicWriteJson(settingsPath, settings);
 }
 
 /** Merge jackops settings into an existing settings.local.json (for project root). */
@@ -209,20 +213,20 @@ export async function mergeClaudeSettings(
   ];
   existing.permissions = { ...existing.permissions, allow: mergedAllow };
 
-  // Merge hooks (append jackops hooks to each event, avoiding duplicates)
+  const isJackopsHook = (
+    // deno-lint-ignore no-explicit-any
+    e: any,
+  ) =>
+    e.hooks?.some((h: { command?: string }) =>
+      h.command?.includes(".jackops/")
+    );
+
+  // Merge hooks: replace jackops hooks per event, remove stale events
   if (!existing.hooks) existing.hooks = {};
   for (const [event, entries] of Object.entries(jackops.hooks)) {
     if (!existing.hooks[event]) {
       existing.hooks[event] = entries;
     } else {
-      // Replace any existing jackops stop-hook entries, then append new ones
-      const isJackopsHook = (
-        // deno-lint-ignore no-explicit-any
-        e: any,
-      ) =>
-        e.hooks?.some((h: { command?: string }) =>
-          h.command?.includes(".jackops/")
-        );
       existing.hooks[event] = [
         ...existing.hooks[event].filter(
           // deno-lint-ignore no-explicit-any
@@ -233,10 +237,53 @@ export async function mergeClaudeSettings(
     }
   }
 
-  await Deno.writeTextFile(
-    settingsPath,
-    JSON.stringify(existing, null, 2) + "\n",
-  );
+  // Remove jackops hooks from events not in the new settings (e.g.
+  // PermissionRequest when switching to manual mode)
+  for (const event of Object.keys(existing.hooks)) {
+    if (event in jackops.hooks) continue;
+    existing.hooks[event] = existing.hooks[event].filter(
+      // deno-lint-ignore no-explicit-any
+      (e: any) => !isJackopsHook(e),
+    );
+    if (existing.hooks[event].length === 0) delete existing.hooks[event];
+  }
+
+  await atomicWriteJson(settingsPath, existing);
+}
+
+/** Atomic JSON write: write to temp file, then rename. */
+async function atomicWriteJson(
+  path: string,
+  // deno-lint-ignore no-explicit-any
+  data: any,
+): Promise<void> {
+  const tmp = path + ".tmp";
+  await Deno.writeTextFile(tmp, JSON.stringify(data, null, 2) + "\n");
+  await Deno.rename(tmp, path);
+}
+
+/** Read runtime approval mode from signal file, falling back to config. */
+export async function readApprovalMode(
+  base: string,
+): Promise<ApprovalMode | null> {
+  try {
+    const mode = (await Deno.readTextFile(join(base, APPROVAL_MODE_FILE)))
+      .trim();
+    if (isApprovalMode(mode)) return mode;
+  } catch {
+    // File doesn't exist yet
+  }
+  return null;
+}
+
+/** Write runtime approval mode signal file. */
+export async function writeApprovalMode(
+  base: string,
+  mode: ApprovalMode,
+): Promise<void> {
+  const dir = join(base, ".jackops");
+  await Deno.mkdir(dir, { recursive: true });
+  await Deno.writeTextFile(join(base, APPROVAL_MODE_FILE), mode + "\n");
 }
 
 // Re-export marker utilities for backward compatibility
@@ -397,7 +444,7 @@ export async function run(opts: DaemonOptions): Promise<void> {
   const { config, base, signal } = opts;
   const session = sessionName(config.project);
   const interval = config.orchestrator.poll_interval;
-  const approval = config.orchestrator.approval;
+  let approval = config.orchestrator.approval;
 
   const workers = new Map<string, WorkerState>();
   for (const w of config.workers) {
@@ -473,6 +520,17 @@ export async function run(opts: DaemonOptions): Promise<void> {
   log.debug`Workers: ${[...workers.keys()].join(", ")}`;
 
   while (!signal.aborted) {
+    // Poll for runtime approval mode changes
+    const newMode = await readApprovalMode(base);
+    if (newMode && newMode !== approval) {
+      log.info`Approval mode changed: ${approval} -> ${newMode}`;
+      approval = newMode;
+      // Reset watchdog state so escalations are re-evaluated under new mode
+      for (const [, state] of workers) {
+        if (state.currentTask) resetWatchdog(state);
+      }
+    }
+
     await tick(session, base, workers, approval);
 
     const c = await tq.counts(base);

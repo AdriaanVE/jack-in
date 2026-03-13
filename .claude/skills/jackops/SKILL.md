@@ -35,6 +35,20 @@ jackops status                  # Show worker status, daemon state, task counts
 jackops status --json           # Structured JSON output (for orchestrator agent)
 ```
 
+### Approval mode
+
+```bash
+jackops approval                    # Show current approval mode
+jackops approval auto               # Switch to auto mode (live, no restart)
+jackops approval manual             # Switch to manual mode
+jackops approval yolo               # Switch to yolo mode
+```
+
+Switches approval mode while the swarm is running. Updates Claude worker
+settings immediately (Claude reads settings live). Non-Claude agents (codex,
+opencode, gemini) keep their original approval behavior -- live switching is not
+supported for them. The daemon picks up the change on the next tick.
+
 ### Worker interaction
 
 ```bash

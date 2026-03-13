@@ -237,3 +237,16 @@ Deno.test("formatJsonStatus defaults tasks to zeros when null", () => {
   assertEquals(result.tasks.review, 0);
   assertEquals(result.tasks.complete, 0);
 });
+
+Deno.test("formatStatus uses runtime approval mode over config", () => {
+  // Config says manual, runtime says yolo
+  const output = formatStatus(
+    testConfig,
+    makeInfo({
+      statuses: [defaultWorker],
+      runtimeApproval: "yolo",
+    }),
+  );
+  assertEquals(output.includes("Approval: yolo"), true);
+  assertEquals(output.includes("manual"), false);
+});

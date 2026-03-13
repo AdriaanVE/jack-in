@@ -1,6 +1,7 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import {
   DEFAULT_STARTUP_INSTRUCTIONS,
+  isApprovalMode,
   loadConfig,
   sessionName,
 } from "../src/config.ts";
@@ -254,4 +255,18 @@ startup_instructions:
       });
     },
   );
+});
+
+// --- isApprovalMode ---
+
+Deno.test("isApprovalMode accepts valid modes", () => {
+  assertEquals(isApprovalMode("manual"), true);
+  assertEquals(isApprovalMode("auto"), true);
+  assertEquals(isApprovalMode("yolo"), true);
+});
+
+Deno.test("isApprovalMode rejects invalid modes", () => {
+  assertEquals(isApprovalMode("invalid"), false);
+  assertEquals(isApprovalMode(""), false);
+  assertEquals(isApprovalMode("MANUAL"), false);
 });
