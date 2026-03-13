@@ -158,9 +158,18 @@ export async function writeClaudeSettings(
   }
   // manual: no PermissionRequest hook — normal Claude permission dialog
 
+  const settings = {
+    permissions: {
+      allow: [
+        "Bash(jackops *)",
+      ],
+    },
+    hooks,
+  };
+
   await Deno.writeTextFile(
     join(settingsDir, "settings.local.json"),
-    JSON.stringify({ hooks }, null, 2) + "\n",
+    JSON.stringify(settings, null, 2) + "\n",
   );
 }
 

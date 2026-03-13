@@ -378,6 +378,24 @@ Deno.test("writeClaudeSettings defaults to manual", async () => {
   }
 });
 
+Deno.test("writeClaudeSettings includes jackops in allowed permissions", async () => {
+  const dir = await makeTempDir();
+  const worktree = join(dir, "worktree");
+  await Deno.mkdir(worktree, { recursive: true });
+  try {
+    await daemon.writeClaudeSettings(worktree, dir, "w1");
+    const settings = JSON.parse(
+      await Deno.readTextFile(
+        join(worktree, ".claude", "settings.local.json"),
+      ),
+    );
+    assertEquals(Array.isArray(settings.permissions?.allow), true);
+    assertEquals(settings.permissions.allow.includes("Bash(jackops *)"), true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("writeClaudeSettings shell-escapes paths with spaces", async () => {
   const dir = await makeTempDir();
   const base = join(dir, "my project");
