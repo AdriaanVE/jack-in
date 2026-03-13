@@ -14,7 +14,7 @@ import * as tmux from "./tmux.ts";
 
 const MAX_README_LINES = 500;
 const MAX_FILE_LISTING = 80;
-const INIT_SESSION = "jackops-init";
+export const INIT_SESSION = "jackops-init";
 
 export interface InitOpts {
   agent?: AgentType;

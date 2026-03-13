@@ -24,7 +24,7 @@ import {
 import * as tq from "./task-queue.ts";
 import * as daemon from "./daemon.ts";
 import { setupLogging } from "./log.ts";
-import { init, initTemplate } from "./init.ts";
+import { init, INIT_SESSION, initTemplate } from "./init.ts";
 
 async function prompt(message: string): Promise<string> {
   const buf = new Uint8Array(4);
@@ -363,6 +363,20 @@ async function up(
 
   await tmux.selectWindow(session, "dashboard");
 
+  // Clean up init session if it exists
+  if (await tmux.hasSession(INIT_SESSION)) {
+    if (Deno.env.get("TMUX")) {
+      // Switch client to the swarm session before killing init
+      try {
+        await tmux.switchClient(session);
+      } catch {
+        // May fail if not attached to init session
+      }
+    }
+    await tmux.killSession(INIT_SESSION);
+    console.log(`Killed init session '${INIT_SESSION}'.`);
+  }
+
   console.log(`\nSwarm running in tmux session '${session}'.`);
   console.log(`Attach with: tmux attach -t ${session}`);
 }
@@ -390,6 +404,12 @@ async function down() {
     }
   } else {
     console.log("No config found. Skipping tmux session cleanup.");
+  }
+
+  // Also kill init session if it exists
+  if (await tmux.hasSession(INIT_SESSION)) {
+    await tmux.killSession(INIT_SESSION);
+    console.log(`Killed init session '${INIT_SESSION}'.`);
   }
 
   const entries = await worktree.list(base);

@@ -144,6 +144,16 @@ export async function selectWindow(
   if (!success) throw new Error(`tmux select-window failed: ${stderr}`);
 }
 
+/** Switch the current tmux client to a different session. */
+export async function switchClient(targetSession: string): Promise<void> {
+  const { success, stderr } = await run([
+    "switch-client",
+    "-t",
+    targetSession,
+  ]);
+  if (!success) throw new Error(`tmux switch-client failed: ${stderr}`);
+}
+
 /** Display a message on the tmux status line. */
 export async function displayMessage(
   session: string,
