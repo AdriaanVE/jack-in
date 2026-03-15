@@ -1102,7 +1102,7 @@ async function watchdog(
     );
     log
       .info`[tier3-result] ${state.name}: status=${result.status} safe=${result.safe_to_approve} action=${
-      result.approval_keystroke || "none"
+      result.approval_keystroke || result.response_text || "none"
     } reason=${result.reason}`;
 
     if (result.status === "permission_prompt") {
@@ -1123,6 +1123,13 @@ async function watchdog(
         } catch {
           // display-message may fail if no client attached
         }
+      }
+    } else if (result.status === "waiting_for_input" && result.response_text) {
+      log.info`[auto-respond] ${state.name}: sending "${result.response_text}"`;
+      try {
+        await tmux.sendKeys(target, result.response_text);
+      } catch {
+        // pane may be gone
       }
     } else if (result.status === "error") {
       log.info`[error-detected] ${state.name}: ${result.reason}`;
