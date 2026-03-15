@@ -961,12 +961,16 @@ function markComplete(state: WorkerState, idleWorkers: WorkerState[]): void {
   idleWorkers.push(state);
 }
 
-/** Check if pane content contains the completion marker for the given task. */
+/** Check if pane content contains the completion marker on its own line. */
 export function paneContainsMarker(
   paneContent: string,
   taskId: string,
 ): boolean {
-  return paneContent.includes(completionMarker(taskId));
+  const expected = completionMarker(taskId);
+  for (const line of paneContent.split("\n")) {
+    if (line.trim() === expected) return true;
+  }
+  return false;
 }
 
 /** Tiered watchdog: cheap pane check first, then LLM eval with guardrails. */
@@ -985,10 +989,17 @@ async function watchdog(
     return; // Pane gone or inaccessible
   }
 
-  // --- Daemon-side marker scan (runs every tick, independent of tiers) ---
-  if (state.currentTask && paneContainsMarker(paneContent, state.currentTask)) {
+  // --- Daemon-side marker scan (non-Claude agents only) ---
+  // Claude agents use the transcript-aware stop hook for completion detection.
+  // The pane contains the marker in the task instructions, so scanning the pane
+  // would produce false positives for Claude.
+  if (
+    state.agent !== "claude" && state.currentTask &&
+    paneContainsMarker(paneContent, state.currentTask)
+  ) {
     log
       .info`[marker-scan] ${state.name}: found completion marker in pane for ${state.currentTask}, creating signal`;
+    log.debug`[marker-scan] ${state.name}: pane content:\n${paneContent}`;
     try {
       const sig = signalPath(base, state.name);
       await Deno.writeTextFile(sig, "");
