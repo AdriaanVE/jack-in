@@ -258,6 +258,21 @@ export async function init(opts: InitOpts): Promise<void> {
   const promptFile = join(promptDir, "init-prompt.md");
   await Deno.writeTextFile(promptFile, fullPrompt);
 
+  // Write minimal Claude settings (permissions only, no hooks) so the init
+  // agent doesn't inherit stale worker/orchestrator hooks from a previous run.
+  if (initAgent === "claude") {
+    const settingsDir = join(base, ".claude");
+    await Deno.mkdir(settingsDir, { recursive: true });
+    const settings = {
+      permissions: { allow: ["Bash(jackops *)"] },
+      hooks: {},
+    };
+    await Deno.writeTextFile(
+      join(settingsDir, "settings.local.json"),
+      JSON.stringify(settings, null, 2) + "\n",
+    );
+  }
+
   // Create tmux session and spawn agent
   console.log(`\nSpawning ${initAgent} in tmux session '${INIT_SESSION}'...`);
   await tmux.createSession(INIT_SESSION);
