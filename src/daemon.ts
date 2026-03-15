@@ -36,6 +36,9 @@ export const HEARTBEAT_FRESH_MS = 30_000;
 export const MAX_TASK_WALL_MS = 15 * 60_000;
 // Ignore needs-input signals within this window after assignment.
 const NEEDS_INPUT_GRACE_MS = 5_000;
+// Orchestrator stall timeout: pane unchanged for this long triggers watchdog.
+// Longer than worker tiers because the orchestrator legitimately idles between reviews.
+export const ORCH_STALL_TIMEOUT_MS = 180_000;
 
 const HOOK_SCRIPTS = [
   "stop-hook.ts",
@@ -64,6 +67,16 @@ interface WorkerState {
   lastSnapshotAt: number | null;
   llmEvalCount: number;
   escalatedToUser: boolean;
+}
+
+export interface OrchestratorState {
+  name: "orchestrator";
+  agent: string;
+  lastPaneSnapshot: string | null;
+  lastSnapshotAt: number | null;
+  llmEvalCount: number;
+  escalatedToUser: boolean;
+  startedAt: number;
 }
 
 // --- Generic signal file helpers ---
@@ -179,11 +192,20 @@ export async function initSignals(base: string): Promise<void> {
   }
 }
 
+const BASE_PERMISSIONS = ["Bash(jackops *)"];
+export const ORCHESTRATOR_PERMISSIONS = [
+  ...BASE_PERMISSIONS,
+  "Bash(tmux *)",
+  "Bash(git diff *)",
+  "Bash(git log *)",
+];
+
 /** Build jackops-specific Claude settings (hooks + permissions). */
 export function buildClaudeSettings(
   base: string,
   workerName: string,
   approval: ApprovalMode = "manual",
+  extraPermissions?: string[],
   // deno-lint-ignore no-explicit-any
 ): { permissions: { allow: string[] }; hooks: Record<string, any[]> } {
   const jackopsDir = join(base, ".jackops");
@@ -253,8 +275,12 @@ export function buildClaudeSettings(
   }
   // manual: no PermissionRequest hook — normal Claude permission dialog
 
+  const allow = extraPermissions
+    ? [...BASE_PERMISSIONS, ...extraPermissions]
+    : BASE_PERMISSIONS;
+
   return {
-    permissions: { allow: ["Bash(jackops *)"] },
+    permissions: { allow },
     hooks,
   };
 }
@@ -265,11 +291,17 @@ export async function writeClaudeSettings(
   base: string,
   workerName: string,
   approval: ApprovalMode = "manual",
+  extraPermissions?: string[],
 ): Promise<void> {
   const settingsDir = join(worktreePath, ".claude");
   await Deno.mkdir(settingsDir, { recursive: true });
 
-  const settings = buildClaudeSettings(base, workerName, approval);
+  const settings = buildClaudeSettings(
+    base,
+    workerName,
+    approval,
+    extraPermissions,
+  );
   const settingsPath = join(settingsDir, "settings.local.json");
 
   await atomicWriteJson(settingsPath, settings);
@@ -281,6 +313,7 @@ export async function mergeClaudeSettings(
   base: string,
   workerName: string,
   approval: ApprovalMode = "manual",
+  extraPermissions?: string[],
 ): Promise<void> {
   const settingsDir = join(projectRoot, ".claude");
   await Deno.mkdir(settingsDir, { recursive: true });
@@ -295,7 +328,12 @@ export async function mergeClaudeSettings(
     // No existing file or invalid JSON — start fresh
   }
 
-  const jackops = buildClaudeSettings(base, workerName, approval);
+  const jackops = buildClaudeSettings(
+    base,
+    workerName,
+    approval,
+    extraPermissions,
+  );
 
   // Merge permissions.allow (deduplicate)
   const existingAllow: string[] = existing.permissions?.allow ?? [];
@@ -413,6 +451,9 @@ export async function clearCurrentTask(
 
 // --- Task prompt ---
 
+const TASK_REMINDER =
+  `Reminder: commit all changes before completing. Do not push. Approve any writes to .jackops/signals/.`;
+
 export function formatTaskPrompt(
   task: tq.Task,
   workerName: string,
@@ -420,6 +461,8 @@ export function formatTaskPrompt(
   base: string,
 ): string {
   const lines: string[] = [];
+  lines.push(TASK_REMINDER);
+  lines.push("");
   lines.push(`# Task: ${task.summary}`);
   lines.push("");
   lines.push(task.description);
@@ -567,6 +610,18 @@ export async function run(opts: DaemonOptions): Promise<void> {
     return;
   }
 
+  const orchState: OrchestratorState | null = config.orchestrator.agent
+    ? {
+      name: "orchestrator",
+      agent: config.orchestrator.agent as string,
+      lastPaneSnapshot: null,
+      lastSnapshotAt: null,
+      llmEvalCount: 0,
+      escalatedToUser: false,
+      startedAt: Date.now(),
+    }
+    : null;
+
   // Set up signal files and hooks
   await initSignals(base);
   for (const w of config.workers) {
@@ -629,9 +684,19 @@ export async function run(opts: DaemonOptions): Promise<void> {
       for (const [, state] of workers) {
         if (state.currentTask) resetWatchdog(state);
       }
+      if (orchState) {
+        orchState.lastPaneSnapshot = null;
+        orchState.lastSnapshotAt = null;
+        orchState.llmEvalCount = 0;
+        orchState.escalatedToUser = false;
+      }
     }
 
     await tick(session, base, workers, approval);
+
+    if (orchState) {
+      await checkOrchestrator(session, orchState, approval);
+    }
 
     const c = await tq.counts(base);
     log
@@ -1073,6 +1138,164 @@ async function watchdog(
     }
   } catch (e) {
     log.error`LLM evaluation failed for ${state.name}: ${
+      e instanceof Error ? e.message : e
+    }`;
+  }
+}
+
+/** Check if the orchestrator agent is alive and progressing. */
+export async function checkOrchestrator(
+  session: string,
+  state: OrchestratorState,
+  approval: ApprovalMode,
+): Promise<void> {
+  const target = `${session}:orchestrator`;
+  let paneContent: string;
+  try {
+    paneContent = await tmux.capturePane(target, 50);
+  } catch {
+    // Pane gone — orchestrator crashed or was killed
+    if (!state.escalatedToUser) {
+      log
+        .warn`[orchestrator] Pane capture failed — orchestrator may have crashed`;
+      state.escalatedToUser = true;
+      try {
+        await tmux.displayMessage(
+          session,
+          "JACKOPS: orchestrator pane gone -- may have crashed",
+        );
+      } catch {
+        // display-message may fail if no client attached
+      }
+    }
+    return;
+  }
+
+  // Pane changed — orchestrator is active, reset escalation
+  if (
+    state.lastPaneSnapshot !== null && paneContent !== state.lastPaneSnapshot
+  ) {
+    state.lastPaneSnapshot = paneContent;
+    state.lastSnapshotAt = Date.now();
+    state.llmEvalCount = 0;
+    state.escalatedToUser = false;
+    log.debug`[orchestrator] Pane changed, still active`;
+    return;
+  }
+
+  // First snapshot — just record it
+  if (state.lastPaneSnapshot === null) {
+    state.lastPaneSnapshot = paneContent;
+    state.lastSnapshotAt = Date.now();
+    log.debug`[orchestrator] First snapshot captured`;
+    return;
+  }
+
+  // Pane unchanged — check if stall threshold exceeded
+  const stalledFor = Date.now() - (state.lastSnapshotAt ?? Date.now());
+  if (stalledFor < ORCH_STALL_TIMEOUT_MS) {
+    log.debug`[orchestrator] Pane unchanged for ${
+      Math.round(stalledFor / 1000)
+    }s (threshold: ${ORCH_STALL_TIMEOUT_MS / 1000}s)`;
+    return;
+  }
+
+  // Stall detected — already escalated?
+  if (state.escalatedToUser) {
+    log.debug`[orchestrator] Already escalated to user, skipping`;
+    return;
+  }
+
+  if (state.llmEvalCount >= MAX_LLM_EVALS) {
+    log
+      .warn`[orchestrator] ${MAX_LLM_EVALS} LLM evals exhausted, notifying user`;
+    state.escalatedToUser = true;
+    try {
+      await tmux.displayMessage(
+        session,
+        `JACKOPS: orchestrator may be stuck - ${MAX_LLM_EVALS} checks failed`,
+      );
+    } catch {
+      // display-message may fail if no client attached
+    }
+    return;
+  }
+
+  if (approval === "yolo") {
+    log.info`[orchestrator] Stalled, sending Enter (yolo)`;
+    try {
+      await tmux.sendKeys(target, "", true);
+    } catch {
+      // pane may be gone
+    }
+    state.llmEvalCount++;
+    return;
+  }
+
+  if (approval === "manual") {
+    log.info`[orchestrator] Stalled, notifying user (manual)`;
+    state.escalatedToUser = true;
+    try {
+      await tmux.displayMessage(
+        session,
+        "JACKOPS: orchestrator may be stuck - check manually",
+      );
+    } catch {
+      // display-message may fail
+    }
+    return;
+  }
+
+  // approval === "auto" — LLM evaluation
+  state.llmEvalCount++;
+  log
+    .info`[orchestrator] Evaluating via LLM (${state.llmEvalCount}/${MAX_LLM_EVALS})...`;
+
+  try {
+    const result = await evaluatePane(
+      paneContent,
+      "orchestrator agent reviewing tasks",
+      state.agent,
+    );
+    log
+      .info`[orchestrator] LLM: status=${result.status} safe=${result.safe_to_approve} action=${
+      result.approval_keystroke || "none"
+    } reason=${result.reason}`;
+
+    if (result.status === "permission_prompt") {
+      if (result.safe_to_approve && result.approval_keystroke) {
+        log.info`[orchestrator] Auto-approving: ${result.reason}`;
+        if (result.approval_keystroke === "Enter") {
+          await tmux.sendKeys(target, "", true);
+        } else {
+          await tmux.sendKeys(target, result.approval_keystroke);
+        }
+      } else {
+        log.info`[orchestrator] Needs manual attention: ${result.reason}`;
+        state.escalatedToUser = true;
+        try {
+          await tmux.displayMessage(
+            session,
+            `JACKOPS: orchestrator needs approval - ${result.reason}`,
+          );
+        } catch {
+          // display-message may fail
+        }
+      }
+    } else if (result.status === "error") {
+      log.info`[orchestrator] Error detected: ${result.reason}`;
+      state.escalatedToUser = true;
+      try {
+        await tmux.displayMessage(
+          session,
+          `JACKOPS: orchestrator hit an error - ${result.reason}`,
+        );
+      } catch {
+        // display-message may fail
+      }
+    }
+  } catch (e) {
+    log.error`[orchestrator] LLM evaluation failed: ${
       e instanceof Error ? e.message : e
     }`;
   }

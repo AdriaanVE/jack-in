@@ -96,6 +96,16 @@ Deno.test("formatTaskPrompt includes summary and description", () => {
   assertStringIncludes(result, "Fix typo in README");
 });
 
+Deno.test("formatTaskPrompt includes task reminder before task heading", () => {
+  const result = daemon.formatTaskPrompt(TASK_MINIMAL, "w1", "claude", "/base");
+  const reminderIdx = result.indexOf("Reminder:");
+  const taskIdx = result.indexOf("# Task: Fix typo");
+  assertEquals(reminderIdx >= 0, true, "should contain reminder");
+  assertEquals(reminderIdx < taskIdx, true, "reminder should come before task");
+  assertStringIncludes(result, "commit all changes");
+  assertStringIncludes(result, ".jackops/signals/");
+});
+
 Deno.test("formatTaskPrompt includes files section", () => {
   const result = daemon.formatTaskPrompt(TASK_FULL, "w1", "claude", "/base");
   assertStringIncludes(result, "## Files likely involved");
@@ -957,6 +967,34 @@ Deno.test("buildClaudeSettings SessionEnd references session-end-hook.sh", () =>
   );
 });
 
+// --- extraPermissions ---
+
+Deno.test("buildClaudeSettings with extraPermissions includes them in allow list", () => {
+  const settings = daemon.buildClaudeSettings("/base", "w1", "manual", [
+    "Bash(tmux *)",
+    "Bash(git diff *)",
+  ]);
+  const allow = settings.permissions.allow;
+  assertStringIncludes(allow.join(","), "Bash(jackops *)");
+  assertStringIncludes(allow.join(","), "Bash(tmux *)");
+  assertStringIncludes(allow.join(","), "Bash(git diff *)");
+});
+
+Deno.test("ORCHESTRATOR_PERMISSIONS includes tmux and git permissions", () => {
+  assertStringIncludes(
+    daemon.ORCHESTRATOR_PERMISSIONS.join(","),
+    "Bash(tmux *)",
+  );
+  assertStringIncludes(
+    daemon.ORCHESTRATOR_PERMISSIONS.join(","),
+    "Bash(git diff *)",
+  );
+  assertStringIncludes(
+    daemon.ORCHESTRATOR_PERMISSIONS.join(","),
+    "Bash(git log *)",
+  );
+});
+
 // --- new constants ---
 
 Deno.test("HEARTBEAT_FRESH_MS is positive", () => {
@@ -995,4 +1033,29 @@ Deno.test("initSignals copies new hook scripts", async () => {
 Deno.test("formatTaskPrompt non-Claude includes error tip", () => {
   const result = daemon.formatTaskPrompt(TASK_FULL, "w1", "codex", "/base");
   assertStringIncludes(result, "notify-hook.sh error");
+});
+
+// --- OrchestratorState / ORCH_STALL_TIMEOUT_MS ---
+
+Deno.test("ORCH_STALL_TIMEOUT_MS is longer than TIER3_TIMEOUT_MS", () => {
+  assertEquals(daemon.ORCH_STALL_TIMEOUT_MS > daemon.TIER3_TIMEOUT_MS, true);
+});
+
+Deno.test("ORCH_STALL_TIMEOUT_MS is positive", () => {
+  assertEquals(daemon.ORCH_STALL_TIMEOUT_MS > 0, true);
+});
+
+Deno.test("OrchestratorState can be constructed with expected shape", () => {
+  const state: daemon.OrchestratorState = {
+    name: "orchestrator",
+    agent: "claude",
+    lastPaneSnapshot: null,
+    lastSnapshotAt: null,
+    llmEvalCount: 0,
+    escalatedToUser: false,
+    startedAt: Date.now(),
+  };
+  assertEquals(state.name, "orchestrator");
+  assertEquals(state.llmEvalCount, 0);
+  assertEquals(state.escalatedToUser, false);
 });
