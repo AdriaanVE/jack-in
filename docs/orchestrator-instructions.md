@@ -16,6 +16,16 @@ intervene when things get stuck.
 - **Workers**: AI agents in isolated git worktrees. They implement tasks. Each
   runs in its own tmux window.
 
+## Startup checklist
+
+Before entering the orchestration loop:
+
+1. Load the jackops skill: `/jackops` -- this gives you the full CLI reference
+2. Read `jackops.yaml` in the project root to understand the swarm
+   configuration: workers, tasks, approval mode, and orchestrator settings. If
+   the file does not exist, stop and tell the user -- the swarm cannot run
+   without it.
+
 ## Your loop
 
 1. Run `jackops status --json` to get current swarm state

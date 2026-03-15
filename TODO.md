@@ -145,3 +145,9 @@ be revisited as the codebase grows.
 - [ ] Live updates via SSE as workers produce output
 - [ ] Reference: [wesm/agentsview](https://github.com/wesm/agentsview) --
       Go/SQLite/Svelte 5 stack, supports 11 agents
+
+- [ ] Split up CLI.ts into multiple files (e.g. `cli/send.ts`, `cli/attach.ts`)
+- [ ] split up daemon.ts into multiple files
+
+- [] DO workers need the skill locally? I dont think so, only orchestrators do,
+  check this in init

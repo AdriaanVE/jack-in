@@ -30,6 +30,30 @@ export const TIER2_TIMEOUT_MS = 60_000;
 export const TIER3_TIMEOUT_MS = 120_000;
 // Max consecutive LLM evals per task before giving up and notifying user.
 export const MAX_LLM_EVALS = 3;
+// Heartbeat younger than this means the worker is confirmed active.
+export const HEARTBEAT_FRESH_MS = 30_000;
+// Progress deadline: force Tier 3 eval regardless of heartbeat after this.
+export const MAX_TASK_WALL_MS = 15 * 60_000;
+// Ignore needs-input signals within this window after assignment.
+const NEEDS_INPUT_GRACE_MS = 5_000;
+
+const HOOK_SCRIPTS = [
+  "stop-hook.ts",
+  "stop-hook.sh",
+  "permission-eval.sh",
+  "yolo-approve.sh",
+  "notification-hook.sh",
+  "heartbeat-hook.sh",
+  "prompt-hook.sh",
+  "session-end-hook.sh",
+  "notify-hook.sh",
+] as const;
+
+const NOTIFICATION_MATCHERS = [
+  "idle_prompt",
+  "permission_prompt",
+  "elicitation_dialog",
+] as const;
 
 interface WorkerState {
   name: string;
@@ -42,18 +66,11 @@ interface WorkerState {
   escalatedToUser: boolean;
 }
 
-// --- Signal file helpers ---
+// --- Generic signal file helpers ---
 
-export function signalPath(base: string, workerName: string): string {
-  return join(base, SIGNAL_DIR, `${workerName}.done`);
-}
-
-export async function hasSignal(
-  base: string,
-  workerName: string,
-): Promise<boolean> {
+async function hasSignalFile(path: string): Promise<boolean> {
   try {
-    await Deno.stat(signalPath(base, workerName));
+    await Deno.stat(path);
     return true;
   } catch (e) {
     if (e instanceof Deno.errors.NotFound) return false;
@@ -61,16 +78,82 @@ export async function hasSignal(
   }
 }
 
-export async function clearSignal(
-  base: string,
-  workerName: string,
-): Promise<void> {
+async function clearSignalFile(path: string): Promise<void> {
   try {
-    await Deno.remove(signalPath(base, workerName));
+    await Deno.remove(path);
   } catch (e) {
     if (e instanceof Deno.errors.NotFound) return;
     throw e;
   }
+}
+
+// --- Signal path + typed helpers ---
+
+export function signalPath(base: string, workerName: string): string {
+  return join(base, SIGNAL_DIR, `${workerName}.done`);
+}
+
+function heartbeatPath(base: string, workerName: string): string {
+  return join(base, SIGNAL_DIR, `${workerName}.heartbeat`);
+}
+
+export function needsInputPath(base: string, workerName: string): string {
+  return join(base, SIGNAL_DIR, `${workerName}.needs-input`);
+}
+
+export function exitedPath(base: string, workerName: string): string {
+  return join(base, SIGNAL_DIR, `${workerName}.exited`);
+}
+
+export function hasSignal(base: string, w: string): Promise<boolean> {
+  return hasSignalFile(signalPath(base, w));
+}
+export function clearSignal(base: string, w: string): Promise<void> {
+  return clearSignalFile(signalPath(base, w));
+}
+
+export function hasNeedsInput(base: string, w: string): Promise<boolean> {
+  return hasSignalFile(needsInputPath(base, w));
+}
+export function clearNeedsInput(base: string, w: string): Promise<void> {
+  return clearSignalFile(needsInputPath(base, w));
+}
+
+export function hasExited(base: string, w: string): Promise<boolean> {
+  return hasSignalFile(exitedPath(base, w));
+}
+export function clearExited(base: string, w: string): Promise<void> {
+  return clearSignalFile(exitedPath(base, w));
+}
+
+export function clearHeartbeat(base: string, w: string): Promise<void> {
+  return clearSignalFile(heartbeatPath(base, w));
+}
+
+export async function heartbeatAge(
+  base: string,
+  workerName: string,
+): Promise<number | null> {
+  try {
+    const stat = await Deno.stat(heartbeatPath(base, workerName));
+    if (!stat.mtime) return null;
+    return Date.now() - stat.mtime.getTime();
+  } catch {
+    return null;
+  }
+}
+
+/** Clear ALL signal files for a worker (used at task assignment boundary). */
+export function clearAllWorkerSignals(
+  base: string,
+  workerName: string,
+): Promise<void[]> {
+  return Promise.all([
+    clearSignal(base, workerName),
+    clearNeedsInput(base, workerName),
+    clearExited(base, workerName),
+    clearHeartbeat(base, workerName),
+  ]);
 }
 
 /** Initialize signal directory and install hook scripts. */
@@ -88,14 +171,7 @@ export async function initSignals(base: string): Promise<void> {
     /\/src\/$/,
     "",
   );
-  for (
-    const name of [
-      "stop-hook.ts",
-      "stop-hook.sh",
-      "permission-eval.sh",
-      "yolo-approve.sh",
-    ]
-  ) {
+  for (const name of HOOK_SCRIPTS) {
     const src = join(repoRoot, "hooks", name);
     const dst = join(jackopsDir, name);
     await Deno.copyFile(src, dst);
@@ -115,6 +191,8 @@ export function buildClaudeSettings(
   const signalDir = join(base, SIGNAL_DIR);
   const currentTaskDir = join(base, CURRENT_TASK_DIR);
 
+  const esc = shellEscape;
+
   // deno-lint-ignore no-explicit-any
   const hooks: Record<string, any[]> = {
     Stop: [
@@ -123,27 +201,45 @@ export function buildClaudeSettings(
         hooks: [
           {
             type: "command",
-            command: `${shellEscape(stopHook)} ${shellEscape(signalDir)} ${
-              shellEscape(workerName)
-            } ${shellEscape(currentTaskDir)}`,
+            command: `${esc(stopHook)} ${esc(signalDir)} ${esc(workerName)} ${
+              esc(currentTaskDir)
+            }`,
           },
         ],
       },
     ],
   };
 
+  const hookCmd = (script: string) =>
+    `${esc(join(jackopsDir, script))} ${esc(signalDir)} ${esc(workerName)}`;
+
+  // deno-lint-ignore no-explicit-any
+  const wildcardHook = (script: string): any[] => [{
+    matcher: "*",
+    hooks: [{ type: "command", command: hookCmd(script) }],
+  }];
+
+  // Notification hook (always active) -- instant needs-input detection
+  hooks.Notification = NOTIFICATION_MATCHERS
+    .map((matcher) => ({
+      matcher,
+      hooks: [{
+        type: "command" as const,
+        command: hookCmd("notification-hook.sh"),
+      }],
+    }));
+
+  hooks.PreToolUse = wildcardHook("heartbeat-hook.sh");
+  hooks.PostToolUse = wildcardHook("heartbeat-hook.sh");
+  hooks.UserPromptSubmit = wildcardHook("prompt-hook.sh");
+  hooks.SessionEnd = wildcardHook("session-end-hook.sh");
+
   if (approval === "auto") {
     const permEval = join(jackopsDir, "permission-eval.sh");
     hooks.PermissionRequest = [
       {
         matcher: "*",
-        hooks: [
-          {
-            type: "command",
-            command: shellEscape(permEval),
-            timeout: 20,
-          },
-        ],
+        hooks: [{ type: "command", command: esc(permEval), timeout: 20 }],
       },
     ];
   } else if (approval === "yolo") {
@@ -151,12 +247,7 @@ export function buildClaudeSettings(
     hooks.PermissionRequest = [
       {
         matcher: "*",
-        hooks: [
-          {
-            type: "command",
-            command: shellEscape(yoloHook),
-          },
-        ],
+        hooks: [{ type: "command", command: esc(yoloHook) }],
       },
     ];
   }
@@ -360,15 +451,24 @@ export function formatTaskPrompt(
     );
     lines.push(marker);
   } else {
-    // Non-Claude agents: touch signal file + output marker for daemon-side scan
-    const sig = signalPath(base, workerName);
+    // Non-Claude agents: use notify-hook shim + marker for daemon-side scan
+    const shim = join(base, ".jackops", "notify-hook.sh");
+    const signalDir = join(base, SIGNAL_DIR);
     const marker = completionMarker(task.id);
     lines.push("");
     lines.push(
-      `IMPORTANT: When you are completely done with this task, run: touch ${sig}`,
+      `IMPORTANT: When you are completely done with this task, run: ${shim} done ${
+        shellEscape(signalDir)
+      } ${shellEscape(workerName)}`,
     );
     lines.push(
       `Also output exactly this on its own line: ${marker}`,
+    );
+    lines.push("");
+    lines.push(
+      `Tip: If you encounter an error you can't resolve, run: ${shim} error ${
+        shellEscape(signalDir)
+      } ${shellEscape(workerName)} "description"`,
     );
   }
   lines.push("");
@@ -504,7 +604,7 @@ export async function run(opts: DaemonOptions): Promise<void> {
 
   // Clear any stale signals
   for (const name of workers.keys()) {
-    await clearSignal(base, name);
+    await clearAllWorkerSignals(base, name);
   }
 
   // Workers with no task are idle — create an initial signal
@@ -582,7 +682,44 @@ async function tick(
       continue;
     }
 
-    const signaled = await hasSignal(base, state.name);
+    // Batch all signal checks in parallel (4 stat calls -> 1 round-trip)
+    const [exited, signaled, needsInput, hbAge] = await Promise.all([
+      hasExited(base, state.name),
+      hasSignal(base, state.name),
+      hasNeedsInput(base, state.name),
+      heartbeatAge(base, state.name),
+    ]);
+
+    // 1. Check .exited signal — worker process is gone
+    if (exited) {
+      log
+        .warn`[exited] ${state.name}: worker exited while task ${state.currentTask} in progress`;
+      try {
+        await tq.unclaim(base, state.currentTask);
+        log
+          .info`[exited] ${state.name}: task ${state.currentTask} returned to pending`;
+      } catch (e) {
+        log.warn`[exited] Could not unclaim ${state.currentTask}: ${
+          e instanceof Error ? e.message : e
+        }`;
+      }
+      await clearCurrentTask(base, state.name);
+      state.currentTask = null;
+      state.assignedAt = null;
+      resetWatchdog(state);
+      await clearAllWorkerSignals(base, state.name);
+      try {
+        await tmux.displayMessage(
+          session,
+          `JACKOPS: ${state.name} exited -- task returned to queue`,
+        );
+      } catch {
+        // display-message may fail if no client attached
+      }
+      continue;
+    }
+
+    // 2. Check .done signal — existing completion logic
     log.debug`${state.name}: task=${state.currentTask} signaled=${signaled}`;
 
     if (signaled) {
@@ -609,11 +746,81 @@ async function tick(
       }
       await clearCurrentTask(base, state.name);
       state.currentTask = null;
-    } else if (
-      state.assignedAt &&
-      now - state.assignedAt > TIER2_TIMEOUT_MS
+      continue;
+    }
+
+    // 3. Check .needs-input signal — worker is blocked
+    if (needsInput) {
+      // Ignore needs-input within grace period after assignment
+      if (
+        state.assignedAt && now - state.assignedAt < NEEDS_INPUT_GRACE_MS
+      ) {
+        log.debug`${state.name}: ignoring early needs-input (${
+          now - state.assignedAt
+        }ms < ${NEEDS_INPUT_GRACE_MS}ms)`;
+        await clearNeedsInput(base, state.name);
+        continue;
+      }
+      log.info`[needs-input] ${state.name}: worker blocked on input`;
+      const target = `${session}:${state.name}`;
+      if (approval === "yolo") {
+        log.info`[yolo-approve] ${state.name}: sending Enter (needs-input)`;
+        try {
+          await tmux.sendKeys(target, "", true);
+        } catch {
+          // pane may be gone
+        }
+      } else if (approval === "auto") {
+        // Trigger immediate LLM eval (skip Tier 2 wait)
+        watchdogChecks.push(
+          watchdog(session, state, base, approval, now),
+        );
+      } else {
+        // manual: notify user
+        log
+          .info`[needs-input] ${state.name}: manual mode, notifying user`;
+        try {
+          await tmux.displayMessage(
+            session,
+            `JACKOPS: ${state.name} needs input -- check worker pane`,
+          );
+        } catch {
+          // display-message may fail
+        }
+      }
+      await clearNeedsInput(base, state.name);
+      continue;
+    }
+
+    // 4. Evaluate heartbeat mtime (already fetched above)
+
+    const elapsed = state.assignedAt ? now - state.assignedAt : 0;
+
+    // 5. Fresh heartbeat AND under wall time limit: skip watchdog
+    if (
+      hbAge !== null && hbAge < HEARTBEAT_FRESH_MS &&
+      elapsed < MAX_TASK_WALL_MS
     ) {
-      // Tiered watchdog for workers that haven't signaled
+      log.debug`${state.name}: heartbeat fresh (${
+        Math.round(hbAge / 1000)
+      }s), skipping watchdog`;
+      continue;
+    }
+
+    // 6. Over wall time limit: force watchdog regardless of heartbeat
+    if (elapsed >= MAX_TASK_WALL_MS) {
+      log
+        .info`[wall-time] ${state.name}: task running for ${
+        Math.round(elapsed / 60_000)
+      }min, forcing watchdog`;
+      watchdogChecks.push(
+        watchdog(session, state, base, approval, now),
+      );
+      continue;
+    }
+
+    // 7. Normal Tier 2/3 logic (no fresh heartbeat)
+    if (state.assignedAt && elapsed > TIER2_TIMEOUT_MS) {
       watchdogChecks.push(
         watchdog(session, state, base, approval, now),
       );
@@ -640,8 +847,8 @@ async function tick(
       continue;
     }
 
-    // Clear signal before sending task and write current-task file
-    await clearSignal(base, state.name);
+    // Clear all signals before sending task and write current-task file
+    await clearAllWorkerSignals(base, state.name);
     await writeCurrentTask(base, state.name, task.id);
 
     const msg = await taskMessage(base, task, state.name, state.agent);
