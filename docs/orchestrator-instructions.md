@@ -45,6 +45,21 @@ For each task in `review`:
 2. `cd` to the worker's worktree and run `git diff main` to see what changed
 3. Evaluate: does the diff satisfy the acceptance criteria?
 4. Run `jackops tasks approve <id>` or `jackops tasks reject <id> "<feedback>"`
+5. **On approval**: merge the worker's branch into a new feature branch to
+   preserve the changes. Create a branch named after the task (e.g.
+   `feat/add-validation-helpers`). Ask the user for confirmation before merging:
+
+   ```bash
+   cd <project-root>
+   git checkout -b feat/<descriptive-task-name> main
+   git merge --no-ff jackops/<project>/<worker> -m "Merge: <task summary>"
+   ```
+
+   Example message to the user:
+   > Merging successful changes to `feat/add-validation-helpers`, ok?
+
+   If the user has specified a different target branch (e.g. in the task
+   description or jackops.yaml), use that instead of creating a new one.
 
 ## Unsticking tasks
 
