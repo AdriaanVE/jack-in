@@ -72,7 +72,7 @@ const PANE_EVAL_TOOL = {
           "idle",
         ],
         description:
-          "working = agent is actively processing; permission_prompt = agent is waiting for user approval of a specific action; waiting_for_input = agent is asking a question or waiting for user to confirm an approach; error = agent hit an error; idle = agent is at prompt with nothing to do",
+          "working = agent is actively processing; permission_prompt = agent is waiting for user approval of a specific action (tool use, file access, shell command); waiting_for_input = agent is asking a question or waiting for user to confirm an approach; error = agent hit an error; idle = agent is at prompt with nothing to do",
       },
       safe_to_approve: {
         type: "boolean",
@@ -169,8 +169,10 @@ Statuses:
 - working: agent is actively processing, no action needed
 - permission_prompt: agent is waiting for approval of a specific action (tool use, file access, shell command)
 - waiting_for_input: agent asked a question or is waiting for confirmation to proceed with an approach
-- error: agent hit an error
+- error: agent hit an error and is not making progress
 - idle: agent is at prompt with nothing to do
+
+IMPORTANT: You can ONLY approve permission prompts or answer simple yes/no questions. You must NEVER send freeform commands or complex instructions to the agent. Your only actions are: approve a permission prompt, provide a short response to unblock a waiting agent, or report status.
 
 For permission_prompt: evaluate safety and provide approval_keystroke if safe.
 For waiting_for_input: provide a short response_text to unblock the agent (e.g., "yes, proceed", "go ahead with that approach").

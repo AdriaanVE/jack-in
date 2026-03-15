@@ -2,43 +2,88 @@
 
 import { join } from "@std/path";
 import { shellEscape } from "./agents.ts";
-import { type ApprovalMode, type Config, sessionName } from "./config.ts";
-import * as tmux from "./tmux.ts";
-import * as tq from "./task-queue.ts";
+import {
+  type ApprovalMode,
+  type Config,
+  isApprovalMode,
+  sessionName,
+} from "./config.ts";
 import { evaluatePane } from "./llm.ts";
 import { getJackopsLogger } from "./log.ts";
+import { completionMarker } from "./marker.ts";
+import * as tq from "./task-queue.ts";
+import * as tmux from "./tmux.ts";
 
 const log = getJackopsLogger("daemon");
 
 const PROMPT_DIR = ".jackops/prompts";
 const SIGNAL_DIR = ".jackops/signals";
 const CURRENT_TASK_DIR = ".jackops/current-task";
-const STALL_TIMEOUT_MS = 60_000;
+export const APPROVAL_MODE_FILE = ".jackops/approval-mode";
 // Grace period after task assignment before accepting completion signals.
 // The Claude Stop hook fires on every response turn, so early signals are
 // likely from the previous turn, not actual task completion.
 const MIN_WORK_MS = 10_000;
+// Tier 2: cheap pane-snapshot check starts after this threshold.
+export const TIER2_TIMEOUT_MS = 60_000;
+// Tier 3: expensive LLM evaluation starts after this threshold.
+export const TIER3_TIMEOUT_MS = 120_000;
+// Max consecutive LLM evals per task before giving up and notifying user.
+export const MAX_LLM_EVALS = 3;
+// Heartbeat younger than this means the worker is confirmed active.
+export const HEARTBEAT_FRESH_MS = 30_000;
+// Progress deadline: force Tier 3 eval regardless of heartbeat after this.
+export const MAX_TASK_WALL_MS = 15 * 60_000;
+// Ignore needs-input signals within this window after assignment.
+const NEEDS_INPUT_GRACE_MS = 5_000;
+// Orchestrator stall timeout: pane unchanged for this long triggers watchdog.
+// Longer than worker tiers because the orchestrator legitimately idles between reviews.
+export const ORCH_STALL_TIMEOUT_MS = 180_000;
+
+const HOOK_SCRIPTS = [
+  "stop-hook.ts",
+  "stop-hook.sh",
+  "permission-eval.sh",
+  "yolo-approve.sh",
+  "notification-hook.sh",
+  "heartbeat-hook.sh",
+  "prompt-hook.sh",
+  "session-end-hook.sh",
+  "notify-hook.sh",
+] as const;
+
+const NOTIFICATION_MATCHERS = [
+  "idle_prompt",
+  "permission_prompt",
+  "elicitation_dialog",
+] as const;
 
 interface WorkerState {
   name: string;
   agent: string;
   currentTask: string | null;
   assignedAt: number | null;
-  lastStallCheck: number | null;
+  lastPaneSnapshot: string | null;
+  lastSnapshotAt: number | null;
+  llmEvalCount: number;
+  escalatedToUser: boolean;
 }
 
-// --- Signal file helpers ---
-
-export function signalPath(base: string, workerName: string): string {
-  return join(base, SIGNAL_DIR, `${workerName}.done`);
+export interface OrchestratorState {
+  name: "orchestrator";
+  agent: string;
+  lastPaneSnapshot: string | null;
+  lastSnapshotAt: number | null;
+  llmEvalCount: number;
+  escalatedToUser: boolean;
+  startedAt: number;
 }
 
-export async function hasSignal(
-  base: string,
-  workerName: string,
-): Promise<boolean> {
+// --- Generic signal file helpers ---
+
+async function hasSignalFile(path: string): Promise<boolean> {
   try {
-    await Deno.stat(signalPath(base, workerName));
+    await Deno.stat(path);
     return true;
   } catch (e) {
     if (e instanceof Deno.errors.NotFound) return false;
@@ -46,16 +91,82 @@ export async function hasSignal(
   }
 }
 
-export async function clearSignal(
-  base: string,
-  workerName: string,
-): Promise<void> {
+async function clearSignalFile(path: string): Promise<void> {
   try {
-    await Deno.remove(signalPath(base, workerName));
+    await Deno.remove(path);
   } catch (e) {
     if (e instanceof Deno.errors.NotFound) return;
     throw e;
   }
+}
+
+// --- Signal path + typed helpers ---
+
+export function signalPath(base: string, workerName: string): string {
+  return join(base, SIGNAL_DIR, `${workerName}.done`);
+}
+
+function heartbeatPath(base: string, workerName: string): string {
+  return join(base, SIGNAL_DIR, `${workerName}.heartbeat`);
+}
+
+export function needsInputPath(base: string, workerName: string): string {
+  return join(base, SIGNAL_DIR, `${workerName}.needs-input`);
+}
+
+export function exitedPath(base: string, workerName: string): string {
+  return join(base, SIGNAL_DIR, `${workerName}.exited`);
+}
+
+export function hasSignal(base: string, w: string): Promise<boolean> {
+  return hasSignalFile(signalPath(base, w));
+}
+export function clearSignal(base: string, w: string): Promise<void> {
+  return clearSignalFile(signalPath(base, w));
+}
+
+export function hasNeedsInput(base: string, w: string): Promise<boolean> {
+  return hasSignalFile(needsInputPath(base, w));
+}
+export function clearNeedsInput(base: string, w: string): Promise<void> {
+  return clearSignalFile(needsInputPath(base, w));
+}
+
+export function hasExited(base: string, w: string): Promise<boolean> {
+  return hasSignalFile(exitedPath(base, w));
+}
+export function clearExited(base: string, w: string): Promise<void> {
+  return clearSignalFile(exitedPath(base, w));
+}
+
+export function clearHeartbeat(base: string, w: string): Promise<void> {
+  return clearSignalFile(heartbeatPath(base, w));
+}
+
+export async function heartbeatAge(
+  base: string,
+  workerName: string,
+): Promise<number | null> {
+  try {
+    const stat = await Deno.stat(heartbeatPath(base, workerName));
+    if (!stat.mtime) return null;
+    return Date.now() - stat.mtime.getTime();
+  } catch {
+    return null;
+  }
+}
+
+/** Clear ALL signal files for a worker (used at task assignment boundary). */
+export function clearAllWorkerSignals(
+  base: string,
+  workerName: string,
+): Promise<void[]> {
+  return Promise.all([
+    clearSignal(base, workerName),
+    clearNeedsInput(base, workerName),
+    clearExited(base, workerName),
+    clearHeartbeat(base, workerName),
+  ]);
 }
 
 /** Initialize signal directory and install hook scripts. */
@@ -73,14 +184,7 @@ export async function initSignals(base: string): Promise<void> {
     /\/src\/$/,
     "",
   );
-  for (
-    const name of [
-      "stop-hook.ts",
-      "stop-hook.sh",
-      "permission-eval.sh",
-      "yolo-approve.sh",
-    ]
-  ) {
+  for (const name of HOOK_SCRIPTS) {
     const src = join(repoRoot, "hooks", name);
     const dst = join(jackopsDir, name);
     await Deno.copyFile(src, dst);
@@ -88,19 +192,28 @@ export async function initSignals(base: string): Promise<void> {
   }
 }
 
-/** Write Claude Code settings with Stop + optional PermissionRequest hooks. */
-export async function writeClaudeSettings(
-  worktreePath: string,
+const BASE_PERMISSIONS = ["Bash(jackops *)"];
+export const ORCHESTRATOR_PERMISSIONS = [
+  ...BASE_PERMISSIONS,
+  "Bash(tmux *)",
+  "Bash(git diff *)",
+  "Bash(git log *)",
+];
+
+/** Build jackops-specific Claude settings (hooks + permissions). */
+export function buildClaudeSettings(
   base: string,
   workerName: string,
   approval: ApprovalMode = "manual",
-): Promise<void> {
-  const settingsDir = join(worktreePath, ".claude");
-  await Deno.mkdir(settingsDir, { recursive: true });
+  extraPermissions?: string[],
+  // deno-lint-ignore no-explicit-any
+): { permissions: { allow: string[] }; hooks: Record<string, any[]> } {
   const jackopsDir = join(base, ".jackops");
   const stopHook = join(jackopsDir, "stop-hook.ts");
   const signalDir = join(base, SIGNAL_DIR);
   const currentTaskDir = join(base, CURRENT_TASK_DIR);
+
+  const esc = shellEscape;
 
   // deno-lint-ignore no-explicit-any
   const hooks: Record<string, any[]> = {
@@ -110,27 +223,45 @@ export async function writeClaudeSettings(
         hooks: [
           {
             type: "command",
-            command: `${shellEscape(stopHook)} ${shellEscape(signalDir)} ${
-              shellEscape(workerName)
-            } ${shellEscape(currentTaskDir)}`,
+            command: `${esc(stopHook)} ${esc(signalDir)} ${esc(workerName)} ${
+              esc(currentTaskDir)
+            }`,
           },
         ],
       },
     ],
   };
 
+  const hookCmd = (script: string) =>
+    `${esc(join(jackopsDir, script))} ${esc(signalDir)} ${esc(workerName)}`;
+
+  // deno-lint-ignore no-explicit-any
+  const wildcardHook = (script: string): any[] => [{
+    matcher: "*",
+    hooks: [{ type: "command", command: hookCmd(script) }],
+  }];
+
+  // Notification hook (always active) -- instant needs-input detection
+  hooks.Notification = NOTIFICATION_MATCHERS
+    .map((matcher) => ({
+      matcher,
+      hooks: [{
+        type: "command" as const,
+        command: hookCmd("notification-hook.sh"),
+      }],
+    }));
+
+  hooks.PreToolUse = wildcardHook("heartbeat-hook.sh");
+  hooks.PostToolUse = wildcardHook("heartbeat-hook.sh");
+  hooks.UserPromptSubmit = wildcardHook("prompt-hook.sh");
+  hooks.SessionEnd = wildcardHook("session-end-hook.sh");
+
   if (approval === "auto") {
     const permEval = join(jackopsDir, "permission-eval.sh");
     hooks.PermissionRequest = [
       {
         matcher: "*",
-        hooks: [
-          {
-            type: "command",
-            command: shellEscape(permEval),
-            timeout: 20,
-          },
-        ],
+        hooks: [{ type: "command", command: esc(permEval), timeout: 20 }],
       },
     ];
   } else if (approval === "yolo") {
@@ -138,30 +269,157 @@ export async function writeClaudeSettings(
     hooks.PermissionRequest = [
       {
         matcher: "*",
-        hooks: [
-          {
-            type: "command",
-            command: shellEscape(yoloHook),
-          },
-        ],
+        hooks: [{ type: "command", command: esc(yoloHook) }],
       },
     ];
   }
   // manual: no PermissionRequest hook — normal Claude permission dialog
 
-  await Deno.writeTextFile(
-    join(settingsDir, "settings.local.json"),
-    JSON.stringify({ hooks }, null, 2) + "\n",
+  const allow = extraPermissions
+    ? [...BASE_PERMISSIONS, ...extraPermissions]
+    : BASE_PERMISSIONS;
+
+  return {
+    permissions: { allow },
+    hooks,
+  };
+}
+
+/** Write Claude Code settings.local.json (overwrites — use for worktrees). */
+export async function writeClaudeSettings(
+  worktreePath: string,
+  base: string,
+  workerName: string,
+  approval: ApprovalMode = "manual",
+  extraPermissions?: string[],
+): Promise<void> {
+  const settingsDir = join(worktreePath, ".claude");
+  await Deno.mkdir(settingsDir, { recursive: true });
+
+  const settings = buildClaudeSettings(
+    base,
+    workerName,
+    approval,
+    extraPermissions,
   );
+  const settingsPath = join(settingsDir, "settings.local.json");
+
+  await atomicWriteJson(settingsPath, settings);
 }
 
-// --- Completion marker ---
+/** Merge jackops settings into an existing settings.local.json (for project root). */
+export async function mergeClaudeSettings(
+  projectRoot: string,
+  base: string,
+  workerName: string,
+  approval: ApprovalMode = "manual",
+  extraPermissions?: string[],
+): Promise<void> {
+  const settingsDir = join(projectRoot, ".claude");
+  await Deno.mkdir(settingsDir, { recursive: true });
+  const settingsPath = join(settingsDir, "settings.local.json");
 
-export const COMPLETION_MARKER_PREFIX = "JACKOPS_TASK_COMPLETE:";
+  // Read existing settings if present
+  // deno-lint-ignore no-explicit-any
+  let existing: Record<string, any> = {};
+  try {
+    existing = JSON.parse(await Deno.readTextFile(settingsPath));
+  } catch {
+    // No existing file or invalid JSON — start fresh
+  }
 
-export function completionMarker(taskId: string): string {
-  return `${COMPLETION_MARKER_PREFIX}${taskId}`;
+  const jackops = buildClaudeSettings(
+    base,
+    workerName,
+    approval,
+    extraPermissions,
+  );
+
+  // Merge permissions.allow (deduplicate)
+  const existingAllow: string[] = existing.permissions?.allow ?? [];
+  const mergedAllow = [
+    ...new Set([...existingAllow, ...jackops.permissions.allow]),
+  ];
+  existing.permissions = { ...existing.permissions, allow: mergedAllow };
+
+  const isJackopsHook = (
+    // deno-lint-ignore no-explicit-any
+    e: any,
+  ) =>
+    e.hooks?.some((h: { command?: string }) =>
+      h.command?.includes(".jackops/")
+    );
+
+  // Merge hooks: replace jackops hooks per event, remove stale events
+  if (!existing.hooks) existing.hooks = {};
+  for (const [event, entries] of Object.entries(jackops.hooks)) {
+    if (!existing.hooks[event]) {
+      existing.hooks[event] = entries;
+    } else {
+      existing.hooks[event] = [
+        ...existing.hooks[event].filter(
+          // deno-lint-ignore no-explicit-any
+          (e: any) => !isJackopsHook(e),
+        ),
+        ...entries,
+      ];
+    }
+  }
+
+  // Remove jackops hooks from events not in the new settings (e.g.
+  // PermissionRequest when switching to manual mode)
+  for (const event of Object.keys(existing.hooks)) {
+    if (event in jackops.hooks) continue;
+    existing.hooks[event] = existing.hooks[event].filter(
+      // deno-lint-ignore no-explicit-any
+      (e: any) => !isJackopsHook(e),
+    );
+    if (existing.hooks[event].length === 0) delete existing.hooks[event];
+  }
+
+  await atomicWriteJson(settingsPath, existing);
 }
+
+/** Atomic JSON write: write to temp file, then rename. */
+async function atomicWriteJson(
+  path: string,
+  // deno-lint-ignore no-explicit-any
+  data: any,
+): Promise<void> {
+  const tmp = path + ".tmp";
+  await Deno.writeTextFile(tmp, JSON.stringify(data, null, 2) + "\n");
+  await Deno.rename(tmp, path);
+}
+
+/** Read runtime approval mode from signal file, falling back to config. */
+export async function readApprovalMode(
+  base: string,
+): Promise<ApprovalMode | null> {
+  try {
+    const mode = (await Deno.readTextFile(join(base, APPROVAL_MODE_FILE)))
+      .trim();
+    if (isApprovalMode(mode)) return mode;
+  } catch {
+    // File doesn't exist yet
+  }
+  return null;
+}
+
+/** Write runtime approval mode signal file. */
+export async function writeApprovalMode(
+  base: string,
+  mode: ApprovalMode,
+): Promise<void> {
+  const dir = join(base, ".jackops");
+  await Deno.mkdir(dir, { recursive: true });
+  await Deno.writeTextFile(join(base, APPROVAL_MODE_FILE), mode + "\n");
+}
+
+// Re-export marker utilities for backward compatibility
+export {
+  completionMarker,
+  MARKER_PREFIX as COMPLETION_MARKER_PREFIX,
+} from "./marker.ts";
 
 // --- Current-task file helpers ---
 
@@ -193,6 +451,9 @@ export async function clearCurrentTask(
 
 // --- Task prompt ---
 
+const TASK_REMINDER =
+  `Reminder: commit all changes before completing. Do not push. Approve any writes to .jackops/signals/.`;
+
 export function formatTaskPrompt(
   task: tq.Task,
   workerName: string,
@@ -200,6 +461,8 @@ export function formatTaskPrompt(
   base: string,
 ): string {
   const lines: string[] = [];
+  lines.push(TASK_REMINDER);
+  lines.push("");
   lines.push(`# Task: ${task.summary}`);
   lines.push("");
   lines.push(task.description);
@@ -231,11 +494,24 @@ export function formatTaskPrompt(
     );
     lines.push(marker);
   } else {
-    // Non-Claude agents need to signal completion themselves
-    const sig = signalPath(base, workerName);
+    // Non-Claude agents: use notify-hook shim + marker for daemon-side scan
+    const shim = join(base, ".jackops", "notify-hook.sh");
+    const signalDir = join(base, SIGNAL_DIR);
+    const marker = completionMarker(task.id);
     lines.push("");
     lines.push(
-      `IMPORTANT: When you are completely done with this task, run: touch ${sig}`,
+      `IMPORTANT: When you are completely done with this task, run: ${shim} done ${
+        shellEscape(signalDir)
+      } ${shellEscape(workerName)}`,
+    );
+    lines.push(
+      `Also output exactly this on its own line: ${marker}`,
+    );
+    lines.push("");
+    lines.push(
+      `Tip: If you encounter an error you can't resolve, run: ${shim} error ${
+        shellEscape(signalDir)
+      } ${shellEscape(workerName)} "description"`,
     );
   }
   lines.push("");
@@ -311,7 +587,7 @@ export async function run(opts: DaemonOptions): Promise<void> {
   const { config, base, signal } = opts;
   const session = sessionName(config.project);
   const interval = config.orchestrator.poll_interval;
-  const approval = config.orchestrator.approval;
+  let approval = config.orchestrator.approval;
 
   const workers = new Map<string, WorkerState>();
   for (const w of config.workers) {
@@ -321,7 +597,10 @@ export async function run(opts: DaemonOptions): Promise<void> {
         agent: w.agent,
         currentTask: null,
         assignedAt: null,
-        lastStallCheck: null,
+        lastPaneSnapshot: null,
+        lastSnapshotAt: null,
+        llmEvalCount: 0,
+        escalatedToUser: false,
       });
     }
   }
@@ -330,6 +609,18 @@ export async function run(opts: DaemonOptions): Promise<void> {
     log.error("No executor workers configured. Nothing to orchestrate.");
     return;
   }
+
+  const orchState: OrchestratorState | null = config.orchestrator.agent
+    ? {
+      name: "orchestrator",
+      agent: config.orchestrator.agent as string,
+      lastPaneSnapshot: null,
+      lastSnapshotAt: null,
+      llmEvalCount: 0,
+      escalatedToUser: false,
+      startedAt: Date.now(),
+    }
+    : null;
 
   // Set up signal files and hooks
   await initSignals(base);
@@ -368,7 +659,7 @@ export async function run(opts: DaemonOptions): Promise<void> {
 
   // Clear any stale signals
   for (const name of workers.keys()) {
-    await clearSignal(base, name);
+    await clearAllWorkerSignals(base, name);
   }
 
   // Workers with no task are idle — create an initial signal
@@ -384,13 +675,34 @@ export async function run(opts: DaemonOptions): Promise<void> {
   log.debug`Workers: ${[...workers.keys()].join(", ")}`;
 
   while (!signal.aborted) {
+    // Poll for runtime approval mode changes
+    const newMode = await readApprovalMode(base);
+    if (newMode && newMode !== approval) {
+      log.info`Approval mode changed: ${approval} -> ${newMode}`;
+      approval = newMode;
+      // Reset watchdog state so escalations are re-evaluated under new mode
+      for (const [, state] of workers) {
+        if (state.currentTask) resetWatchdog(state);
+      }
+      if (orchState) {
+        orchState.lastPaneSnapshot = null;
+        orchState.lastSnapshotAt = null;
+        orchState.llmEvalCount = 0;
+        orchState.escalatedToUser = false;
+      }
+    }
+
     await tick(session, base, workers, approval);
+
+    if (orchState) {
+      await checkOrchestrator(session, orchState, approval);
+    }
 
     const c = await tq.counts(base);
     log
-      .debug`Tick done. Tasks: ${c.pending} pending, ${c.current} current, ${c.complete} complete, ${c.rejected} rejected`;
+      .debug`Tick done. Tasks: ${c.pending} pending, ${c.current} current, ${c.review} review, ${c.complete} complete, ${c.rejected} rejected`;
 
-    if (c.pending === 0 && c.current === 0) {
+    if (c.pending === 0 && c.current === 0 && c.review === 0) {
       log
         .info`All tasks complete (${c.complete} done, ${c.rejected} rejected). Watching for new tasks...`;
       await waitForNewTask(base, signal);
@@ -425,15 +737,57 @@ async function tick(
 ): Promise<void> {
   const now = Date.now();
   const idleWorkers: WorkerState[] = [];
-  const stallChecks: Promise<void>[] = [];
+  const watchdogChecks: Promise<void>[] = [];
 
   for (const [, state] of workers) {
-    const signaled = await hasSignal(base, state.name);
-    log.debug`${state.name}: task=${
-      state.currentTask ?? "none"
-    } signaled=${signaled}`;
+    if (!state.currentTask) {
+      // Worker is idle and ready — no need to check signal file
+      log.debug`${state.name}: task=none idle`;
+      idleWorkers.push(state);
+      continue;
+    }
 
-    if (state.currentTask && signaled) {
+    // Batch all signal checks in parallel (4 stat calls -> 1 round-trip)
+    const [exited, signaled, needsInput, hbAge] = await Promise.all([
+      hasExited(base, state.name),
+      hasSignal(base, state.name),
+      hasNeedsInput(base, state.name),
+      heartbeatAge(base, state.name),
+    ]);
+
+    // 1. Check .exited signal — worker process is gone
+    if (exited) {
+      log
+        .warn`[exited] ${state.name}: worker exited while task ${state.currentTask} in progress`;
+      try {
+        await tq.unclaim(base, state.currentTask);
+        log
+          .info`[exited] ${state.name}: task ${state.currentTask} returned to pending`;
+      } catch (e) {
+        log.warn`[exited] Could not unclaim ${state.currentTask}: ${
+          e instanceof Error ? e.message : e
+        }`;
+      }
+      await clearCurrentTask(base, state.name);
+      state.currentTask = null;
+      state.assignedAt = null;
+      resetWatchdog(state);
+      await clearAllWorkerSignals(base, state.name);
+      try {
+        await tmux.displayMessage(
+          session,
+          `JACKOPS: ${state.name} exited -- task returned to queue`,
+        );
+      } catch {
+        // display-message may fail if no client attached
+      }
+      continue;
+    }
+
+    // 2. Check .done signal — existing completion logic
+    log.debug`${state.name}: task=${state.currentTask} signaled=${signaled}`;
+
+    if (signaled) {
       // Ignore early signals — the Stop hook fires on every Claude response
       // turn, so signals arriving right after assignment are from the previous
       // turn, not actual task completion.
@@ -445,38 +799,100 @@ async function tick(
         continue;
       }
       // Worker finished its task
+      markComplete(state, idleWorkers);
       try {
-        await tq.complete(base, state.currentTask);
-        log.info`[complete] ${state.name} finished ${state.currentTask}`;
+        await tq.review(base, state.currentTask);
+        log
+          .info`[review] ${state.name} finished ${state.currentTask}, sent to review`;
       } catch (e) {
-        log.warn`Could not complete ${state.currentTask}: ${
+        log.warn`Could not move ${state.currentTask} to review: ${
           e instanceof Error ? e.message : e
         }`;
       }
       await clearCurrentTask(base, state.name);
       state.currentTask = null;
-      state.assignedAt = null;
-      state.lastStallCheck = null;
-      idleWorkers.push(state);
-    } else if (!state.currentTask && signaled) {
-      // Worker is idle and ready
-      idleWorkers.push(state);
-    } else if (
-      state.currentTask && !signaled &&
-      state.assignedAt &&
-      now - state.assignedAt > STALL_TIMEOUT_MS &&
-      (!state.lastStallCheck || now - state.lastStallCheck > STALL_TIMEOUT_MS)
+      continue;
+    }
+
+    // 3. Check .needs-input signal — worker is blocked
+    if (needsInput) {
+      // Ignore needs-input within grace period after assignment
+      if (
+        state.assignedAt && now - state.assignedAt < NEEDS_INPUT_GRACE_MS
+      ) {
+        log.debug`${state.name}: ignoring early needs-input (${
+          now - state.assignedAt
+        }ms < ${NEEDS_INPUT_GRACE_MS}ms)`;
+        await clearNeedsInput(base, state.name);
+        continue;
+      }
+      log.info`[needs-input] ${state.name}: worker blocked on input`;
+      const target = `${session}:${state.name}`;
+      if (approval === "yolo") {
+        log.info`[yolo-approve] ${state.name}: sending Enter (needs-input)`;
+        try {
+          await tmux.sendKeys(target, "", true);
+        } catch {
+          // pane may be gone
+        }
+      } else if (approval === "auto") {
+        // Trigger immediate LLM eval (skip Tier 2 wait)
+        watchdogChecks.push(
+          watchdog(session, state, base, approval, now),
+        );
+      } else {
+        // manual: notify user
+        log
+          .info`[needs-input] ${state.name}: manual mode, notifying user`;
+        try {
+          await tmux.displayMessage(
+            session,
+            `JACKOPS: ${state.name} needs input -- check worker pane`,
+          );
+        } catch {
+          // display-message may fail
+        }
+      }
+      await clearNeedsInput(base, state.name);
+      continue;
+    }
+
+    // 4. Evaluate heartbeat mtime (already fetched above)
+
+    const elapsed = state.assignedAt ? now - state.assignedAt : 0;
+
+    // 5. Fresh heartbeat AND under wall time limit: skip watchdog
+    if (
+      hbAge !== null && hbAge < HEARTBEAT_FRESH_MS &&
+      elapsed < MAX_TASK_WALL_MS
     ) {
-      // Worker may be stuck on a permission prompt or asking for confirmation
-      log.debug`${state.name}: possible stall detected (${
-        now - state.assignedAt
-      }ms since assignment)`;
-      state.lastStallCheck = now;
-      stallChecks.push(checkStalled(session, state, base, approval));
+      log.debug`${state.name}: heartbeat fresh (${
+        Math.round(hbAge / 1000)
+      }s), skipping watchdog`;
+      continue;
+    }
+
+    // 6. Over wall time limit: force watchdog regardless of heartbeat
+    if (elapsed >= MAX_TASK_WALL_MS) {
+      log
+        .info`[wall-time] ${state.name}: task running for ${
+        Math.round(elapsed / 60_000)
+      }min, forcing watchdog`;
+      watchdogChecks.push(
+        watchdog(session, state, base, approval, now),
+      );
+      continue;
+    }
+
+    // 7. Normal Tier 2/3 logic (no fresh heartbeat)
+    if (state.assignedAt && elapsed > TIER2_TIMEOUT_MS) {
+      watchdogChecks.push(
+        watchdog(session, state, base, approval, now),
+      );
     }
   }
 
-  if (stallChecks.length > 0) await Promise.all(stallChecks);
+  if (watchdogChecks.length > 0) await Promise.all(watchdogChecks);
 
   // Assign ready tasks to idle workers
   if (idleWorkers.length === 0) {
@@ -496,8 +912,8 @@ async function tick(
       continue;
     }
 
-    // Clear signal before sending task and write current-task file
-    await clearSignal(base, state.name);
+    // Clear all signals before sending task and write current-task file
+    await clearAllWorkerSignals(base, state.name);
     await writeCurrentTask(base, state.name, task.id);
 
     const msg = await taskMessage(base, task, state.name, state.agent);
@@ -522,7 +938,7 @@ async function tick(
 
     state.currentTask = task.id;
     state.assignedAt = now;
-    state.lastStallCheck = null;
+    resetWatchdog(state);
     log.info`[assign] ${task.id} -> ${state.name}: ${task.summary}`;
     taskIdx++;
   }
@@ -530,36 +946,131 @@ async function tick(
   printStatus(workers);
 }
 
-async function checkStalled(
+/** Reset watchdog-related fields on a worker. */
+function resetWatchdog(state: WorkerState): void {
+  state.lastPaneSnapshot = null;
+  state.lastSnapshotAt = null;
+  state.llmEvalCount = 0;
+  state.escalatedToUser = false;
+}
+
+/** Reset worker state fields when a task completes. */
+function markComplete(state: WorkerState, idleWorkers: WorkerState[]): void {
+  state.assignedAt = null;
+  resetWatchdog(state);
+  idleWorkers.push(state);
+}
+
+/** Check if pane content contains the completion marker for the given task. */
+export function paneContainsMarker(
+  paneContent: string,
+  taskId: string,
+): boolean {
+  return paneContent.includes(completionMarker(taskId));
+}
+
+/** Tiered watchdog: cheap pane check first, then LLM eval with guardrails. */
+async function watchdog(
   session: string,
   state: WorkerState,
   base: string,
   approval: ApprovalMode,
+  now: number,
 ): Promise<void> {
   const target = `${session}:${state.name}`;
   let paneContent: string;
   try {
-    paneContent = await tmux.capturePane(target, 30);
+    paneContent = await tmux.capturePane(target, 50);
   } catch {
     return; // Pane gone or inaccessible
   }
 
+  // --- Daemon-side marker scan (runs every tick, independent of tiers) ---
+  if (state.currentTask && paneContainsMarker(paneContent, state.currentTask)) {
+    log
+      .info`[marker-scan] ${state.name}: found completion marker in pane for ${state.currentTask}, creating signal`;
+    try {
+      const sig = signalPath(base, state.name);
+      await Deno.writeTextFile(sig, "");
+    } catch (e) {
+      log.warn`[marker-scan] Failed to write signal for ${state.name}: ${
+        e instanceof Error ? e.message : e
+      }`;
+    }
+    return;
+  }
+
+  // --- Tier 2: pane snapshot diff (TIER2 - TIER3 window) ---
+  const elapsed = now - (state.assignedAt ?? now);
+  if (elapsed < TIER3_TIMEOUT_MS) {
+    const prevSnapshot = state.lastPaneSnapshot;
+    state.lastPaneSnapshot = paneContent;
+    state.lastSnapshotAt = now;
+
+    if (prevSnapshot === null) {
+      log.debug`${state.name}: tier2 — first snapshot captured`;
+      return;
+    }
+
+    if (prevSnapshot === paneContent) {
+      // Pane is unchanged — agent is idle
+      log
+        .info`[tier2-idle] ${state.name}: pane unchanged, nudging for marker`;
+      const marker = completionMarker(state.currentTask!);
+      const nudge =
+        `If you have completed your task, output exactly this on its own line: ${marker}`;
+      try {
+        await tmux.sendKeys(target, nudge);
+      } catch {
+        // pane may be gone
+      }
+    } else {
+      log.debug`${state.name}: tier2 — pane changed, agent still active`;
+    }
+    return;
+  }
+
+  // --- Tier 3: LLM evaluation with guardrails ---
+  // Keep updating snapshot for continuity
+  state.lastPaneSnapshot = paneContent;
+  state.lastSnapshotAt = now;
+
+  if (state.escalatedToUser) {
+    log.debug`${state.name}: already escalated to user, skipping`;
+    return;
+  }
+
+  if (state.llmEvalCount >= MAX_LLM_EVALS) {
+    log
+      .warn`[tier3-escalate] ${state.name}: ${MAX_LLM_EVALS} LLM evals exhausted, notifying user`;
+    state.escalatedToUser = true;
+    try {
+      await tmux.displayMessage(
+        session,
+        `JACKOPS: ${state.name} may be stuck - ${MAX_LLM_EVALS} checks failed, needs manual attention`,
+      );
+    } catch {
+      // display-message may fail if no client attached
+    }
+    return;
+  }
+
   if (approval === "yolo") {
-    // Approve blindly — send Enter to dismiss any prompt
     log.info`[yolo-approve] ${state.name}: sending Enter`;
-    log.debug`${state.name}: pane content (last 30 lines):\n${paneContent}`;
+    log.debug`${state.name}: pane content (last 50 lines):\n${paneContent}`;
     try {
       await tmux.sendKeys(target, "", true);
     } catch {
       // pane may be gone
     }
+    state.llmEvalCount++;
     return;
   }
 
   if (approval === "manual") {
-    // Notify only, don't evaluate or approve
     log.info`[stall-detected] ${state.name}: may need attention`;
-    log.debug`${state.name}: pane content (last 30 lines):\n${paneContent}`;
+    log.debug`${state.name}: pane content (last 50 lines):\n${paneContent}`;
+    state.escalatedToUser = true;
     try {
       await tmux.displayMessage(
         session,
@@ -571,8 +1082,10 @@ async function checkStalled(
     return;
   }
 
-  // approval === "auto" — LLM evaluation
-  log.info`[stall-check] Evaluating ${state.name} via LLM...`;
+  // approval === "auto" — LLM evaluation (no auto-respond, only permission prompts)
+  state.llmEvalCount++;
+  log
+    .info`[tier3-eval] Evaluating ${state.name} via LLM (${state.llmEvalCount}/${MAX_LLM_EVALS})...`;
   log.debug`${state.name}: pane content for LLM eval:\n${paneContent}`;
 
   let taskSummary = "unknown task";
@@ -588,7 +1101,7 @@ async function checkStalled(
       state.agent,
     );
     log
-      .info`[stall-result] ${state.name}: status=${result.status} safe=${result.safe_to_approve} action=${
+      .info`[tier3-result] ${state.name}: status=${result.status} safe=${result.safe_to_approve} action=${
       result.approval_keystroke || result.response_text || "none"
     } reason=${result.reason}`;
 
@@ -602,6 +1115,7 @@ async function checkStalled(
         }
       } else {
         log.info`[needs-attention] ${state.name}: ${result.reason}`;
+        state.escalatedToUser = true;
         try {
           const msg =
             `JACKOPS: ${state.name} needs approval - ${result.reason}`;
@@ -619,6 +1133,7 @@ async function checkStalled(
       }
     } else if (result.status === "error") {
       log.info`[error-detected] ${state.name}: ${result.reason}`;
+      state.escalatedToUser = true;
       try {
         const msg = `JACKOPS: ${state.name} hit an error - ${result.reason}`;
         await tmux.displayMessage(session, msg);
@@ -630,6 +1145,164 @@ async function checkStalled(
     }
   } catch (e) {
     log.error`LLM evaluation failed for ${state.name}: ${
+      e instanceof Error ? e.message : e
+    }`;
+  }
+}
+
+/** Check if the orchestrator agent is alive and progressing. */
+export async function checkOrchestrator(
+  session: string,
+  state: OrchestratorState,
+  approval: ApprovalMode,
+): Promise<void> {
+  const target = `${session}:orchestrator`;
+  let paneContent: string;
+  try {
+    paneContent = await tmux.capturePane(target, 50);
+  } catch {
+    // Pane gone — orchestrator crashed or was killed
+    if (!state.escalatedToUser) {
+      log
+        .warn`[orchestrator] Pane capture failed — orchestrator may have crashed`;
+      state.escalatedToUser = true;
+      try {
+        await tmux.displayMessage(
+          session,
+          "JACKOPS: orchestrator pane gone -- may have crashed",
+        );
+      } catch {
+        // display-message may fail if no client attached
+      }
+    }
+    return;
+  }
+
+  // Pane changed — orchestrator is active, reset escalation
+  if (
+    state.lastPaneSnapshot !== null && paneContent !== state.lastPaneSnapshot
+  ) {
+    state.lastPaneSnapshot = paneContent;
+    state.lastSnapshotAt = Date.now();
+    state.llmEvalCount = 0;
+    state.escalatedToUser = false;
+    log.debug`[orchestrator] Pane changed, still active`;
+    return;
+  }
+
+  // First snapshot — just record it
+  if (state.lastPaneSnapshot === null) {
+    state.lastPaneSnapshot = paneContent;
+    state.lastSnapshotAt = Date.now();
+    log.debug`[orchestrator] First snapshot captured`;
+    return;
+  }
+
+  // Pane unchanged — check if stall threshold exceeded
+  const stalledFor = Date.now() - (state.lastSnapshotAt ?? Date.now());
+  if (stalledFor < ORCH_STALL_TIMEOUT_MS) {
+    log.debug`[orchestrator] Pane unchanged for ${
+      Math.round(stalledFor / 1000)
+    }s (threshold: ${ORCH_STALL_TIMEOUT_MS / 1000}s)`;
+    return;
+  }
+
+  // Stall detected — already escalated?
+  if (state.escalatedToUser) {
+    log.debug`[orchestrator] Already escalated to user, skipping`;
+    return;
+  }
+
+  if (state.llmEvalCount >= MAX_LLM_EVALS) {
+    log
+      .warn`[orchestrator] ${MAX_LLM_EVALS} LLM evals exhausted, notifying user`;
+    state.escalatedToUser = true;
+    try {
+      await tmux.displayMessage(
+        session,
+        `JACKOPS: orchestrator may be stuck - ${MAX_LLM_EVALS} checks failed`,
+      );
+    } catch {
+      // display-message may fail if no client attached
+    }
+    return;
+  }
+
+  if (approval === "yolo") {
+    log.info`[orchestrator] Stalled, sending Enter (yolo)`;
+    try {
+      await tmux.sendKeys(target, "", true);
+    } catch {
+      // pane may be gone
+    }
+    state.llmEvalCount++;
+    return;
+  }
+
+  if (approval === "manual") {
+    log.info`[orchestrator] Stalled, notifying user (manual)`;
+    state.escalatedToUser = true;
+    try {
+      await tmux.displayMessage(
+        session,
+        "JACKOPS: orchestrator may be stuck - check manually",
+      );
+    } catch {
+      // display-message may fail
+    }
+    return;
+  }
+
+  // approval === "auto" — LLM evaluation
+  state.llmEvalCount++;
+  log
+    .info`[orchestrator] Evaluating via LLM (${state.llmEvalCount}/${MAX_LLM_EVALS})...`;
+
+  try {
+    const result = await evaluatePane(
+      paneContent,
+      "orchestrator agent reviewing tasks",
+      state.agent,
+    );
+    log
+      .info`[orchestrator] LLM: status=${result.status} safe=${result.safe_to_approve} action=${
+      result.approval_keystroke || "none"
+    } reason=${result.reason}`;
+
+    if (result.status === "permission_prompt") {
+      if (result.safe_to_approve && result.approval_keystroke) {
+        log.info`[orchestrator] Auto-approving: ${result.reason}`;
+        if (result.approval_keystroke === "Enter") {
+          await tmux.sendKeys(target, "", true);
+        } else {
+          await tmux.sendKeys(target, result.approval_keystroke);
+        }
+      } else {
+        log.info`[orchestrator] Needs manual attention: ${result.reason}`;
+        state.escalatedToUser = true;
+        try {
+          await tmux.displayMessage(
+            session,
+            `JACKOPS: orchestrator needs approval - ${result.reason}`,
+          );
+        } catch {
+          // display-message may fail
+        }
+      }
+    } else if (result.status === "error") {
+      log.info`[orchestrator] Error detected: ${result.reason}`;
+      state.escalatedToUser = true;
+      try {
+        await tmux.displayMessage(
+          session,
+          `JACKOPS: orchestrator hit an error - ${result.reason}`,
+        );
+      } catch {
+        // display-message may fail
+      }
+    }
+  } catch (e) {
+    log.error`[orchestrator] LLM evaluation failed: ${
       e instanceof Error ? e.message : e
     }`;
   }

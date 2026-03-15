@@ -96,6 +96,16 @@ Deno.test("formatTaskPrompt includes summary and description", () => {
   assertStringIncludes(result, "Fix typo in README");
 });
 
+Deno.test("formatTaskPrompt includes task reminder before task heading", () => {
+  const result = daemon.formatTaskPrompt(TASK_MINIMAL, "w1", "claude", "/base");
+  const reminderIdx = result.indexOf("Reminder:");
+  const taskIdx = result.indexOf("# Task: Fix typo");
+  assertEquals(reminderIdx >= 0, true, "should contain reminder");
+  assertEquals(reminderIdx < taskIdx, true, "reminder should come before task");
+  assertStringIncludes(result, "commit all changes");
+  assertStringIncludes(result, ".jackops/signals/");
+});
+
 Deno.test("formatTaskPrompt includes files section", () => {
   const result = daemon.formatTaskPrompt(TASK_FULL, "w1", "claude", "/base");
   assertStringIncludes(result, "## Files likely involved");
@@ -134,7 +144,7 @@ Deno.test("formatTaskPrompt omits feedback section when absent", () => {
 Deno.test("formatTaskPrompt adds signal instruction for non-Claude agents", () => {
   const result = daemon.formatTaskPrompt(TASK_FULL, "w1", "codex", "/base");
   assertStringIncludes(result, "IMPORTANT: When you are completely done");
-  assertStringIncludes(result, "touch /base/.jackops/signals/w1.done");
+  assertStringIncludes(result, "notify-hook.sh done");
 });
 
 Deno.test("formatTaskPrompt adds completion marker for Claude agents", () => {
@@ -157,10 +167,10 @@ Deno.test("formatTaskPrompt Claude gets marker not touch instruction", () => {
   assertEquals(result.includes("touch /base/.jackops/signals"), false);
 });
 
-Deno.test("formatTaskPrompt non-Claude gets touch not marker", () => {
+Deno.test("formatTaskPrompt non-Claude gets notify-hook and marker", () => {
   const result = daemon.formatTaskPrompt(TASK_FULL, "w1", "codex", "/base");
-  assertStringIncludes(result, "touch /base/.jackops/signals/w1.done");
-  assertEquals(result.includes("JACKOPS_TASK_COMPLETE:"), false);
+  assertStringIncludes(result, "notify-hook.sh done");
+  assertStringIncludes(result, "JACKOPS_TASK_COMPLETE:task-001");
 });
 
 // --- completionMarker ---
@@ -378,6 +388,24 @@ Deno.test("writeClaudeSettings defaults to manual", async () => {
   }
 });
 
+Deno.test("writeClaudeSettings includes jackops in allowed permissions", async () => {
+  const dir = await makeTempDir();
+  const worktree = join(dir, "worktree");
+  await Deno.mkdir(worktree, { recursive: true });
+  try {
+    await daemon.writeClaudeSettings(worktree, dir, "w1");
+    const settings = JSON.parse(
+      await Deno.readTextFile(
+        join(worktree, ".claude", "settings.local.json"),
+      ),
+    );
+    assertEquals(Array.isArray(settings.permissions?.allow), true);
+    assertEquals(settings.permissions.allow.includes("Bash(jackops *)"), true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("writeClaudeSettings shell-escapes paths with spaces", async () => {
   const dir = await makeTempDir();
   const base = join(dir, "my project");
@@ -401,6 +429,98 @@ Deno.test("writeClaudeSettings shell-escapes paths with spaces", async () => {
       stopCmd,
       `'${join(base, ".jackops", "current-task")}'`,
     );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// --- mergeClaudeSettings ---
+
+Deno.test("mergeClaudeSettings creates settings when none exist", async () => {
+  const dir = await makeTempDir();
+  try {
+    await daemon.mergeClaudeSettings(dir, dir, "orchestrator", "auto");
+    const settings = JSON.parse(
+      await Deno.readTextFile(join(dir, ".claude", "settings.local.json")),
+    );
+    assertEquals(settings.permissions.allow.includes("Bash(jackops *)"), true);
+    assertEquals(settings.hooks.Stop.length, 1);
+    assertEquals(settings.hooks.PermissionRequest.length, 1);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("mergeClaudeSettings preserves existing permissions", async () => {
+  const dir = await makeTempDir();
+  try {
+    const settingsDir = join(dir, ".claude");
+    await Deno.mkdir(settingsDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(settingsDir, "settings.local.json"),
+      JSON.stringify({
+        permissions: { allow: ["Bash(git *)"] },
+      }),
+    );
+    await daemon.mergeClaudeSettings(dir, dir, "orchestrator");
+    const settings = JSON.parse(
+      await Deno.readTextFile(join(settingsDir, "settings.local.json")),
+    );
+    assertEquals(settings.permissions.allow.includes("Bash(git *)"), true);
+    assertEquals(settings.permissions.allow.includes("Bash(jackops *)"), true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("mergeClaudeSettings deduplicates jackops permission", async () => {
+  const dir = await makeTempDir();
+  try {
+    const settingsDir = join(dir, ".claude");
+    await Deno.mkdir(settingsDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(settingsDir, "settings.local.json"),
+      JSON.stringify({
+        permissions: { allow: ["Bash(jackops *)"] },
+      }),
+    );
+    await daemon.mergeClaudeSettings(dir, dir, "orchestrator");
+    const settings = JSON.parse(
+      await Deno.readTextFile(join(settingsDir, "settings.local.json")),
+    );
+    const count = settings.permissions.allow.filter(
+      (s: string) => s === "Bash(jackops *)",
+    ).length;
+    assertEquals(count, 1);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("mergeClaudeSettings preserves existing hooks", async () => {
+  const dir = await makeTempDir();
+  try {
+    const settingsDir = join(dir, ".claude");
+    await Deno.mkdir(settingsDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(settingsDir, "settings.local.json"),
+      JSON.stringify({
+        hooks: {
+          Stop: [{
+            matcher: "*",
+            hooks: [{ type: "command", command: "echo hi" }],
+          }],
+        },
+      }),
+    );
+    await daemon.mergeClaudeSettings(dir, dir, "orchestrator");
+    const settings = JSON.parse(
+      await Deno.readTextFile(join(settingsDir, "settings.local.json")),
+    );
+    // Should have both the existing hook and the jackops hook
+    assertEquals(settings.hooks.Stop.length, 2);
+    assertStringIncludes(settings.hooks.Stop[0].hooks[0].command, "echo hi");
+    assertStringIncludes(settings.hooks.Stop[1].hooks[0].command, "stop-hook");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -478,4 +598,464 @@ Deno.test("unclaim fails for task not in current", async () => {
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+// --- paneContainsMarker ---
+
+Deno.test("paneContainsMarker detects marker in pane content", () => {
+  const pane = `Some output here
+JACKOPS_TASK_COMPLETE:task-001
+>`;
+  assertEquals(daemon.paneContainsMarker(pane, "task-001"), true);
+});
+
+Deno.test("paneContainsMarker returns false for different task ID", () => {
+  const pane = `Some output here
+JACKOPS_TASK_COMPLETE:task-001
+>`;
+  assertEquals(daemon.paneContainsMarker(pane, "task-002"), false);
+});
+
+Deno.test("paneContainsMarker returns false when no marker present", () => {
+  const pane = `Agent is working...
+> some command output`;
+  assertEquals(daemon.paneContainsMarker(pane, "task-001"), false);
+});
+
+Deno.test("paneContainsMarker detects marker surrounded by other text", () => {
+  const pane = `lots of output
+here is JACKOPS_TASK_COMPLETE:task-abc inline
+more output`;
+  assertEquals(daemon.paneContainsMarker(pane, "task-abc"), true);
+});
+
+// --- tier constants ---
+
+Deno.test("TIER2_TIMEOUT_MS < TIER3_TIMEOUT_MS", () => {
+  assertEquals(daemon.TIER2_TIMEOUT_MS < daemon.TIER3_TIMEOUT_MS, true);
+});
+
+Deno.test("MAX_LLM_EVALS is a positive integer", () => {
+  assertEquals(daemon.MAX_LLM_EVALS > 0, true);
+  assertEquals(Number.isInteger(daemon.MAX_LLM_EVALS), true);
+});
+
+// --- approval mode file ---
+
+Deno.test("readApprovalMode returns null when no file exists", async () => {
+  const dir = await makeTempDir();
+  try {
+    assertEquals(await daemon.readApprovalMode(dir), null);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("writeApprovalMode + readApprovalMode round-trip", async () => {
+  const dir = await makeTempDir();
+  try {
+    await daemon.writeApprovalMode(dir, "yolo");
+    assertEquals(await daemon.readApprovalMode(dir), "yolo");
+    await daemon.writeApprovalMode(dir, "manual");
+    assertEquals(await daemon.readApprovalMode(dir), "manual");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("readApprovalMode ignores invalid mode", async () => {
+  const dir = await makeTempDir();
+  try {
+    await Deno.mkdir(join(dir, ".jackops"), { recursive: true });
+    await Deno.writeTextFile(
+      join(dir, daemon.APPROVAL_MODE_FILE),
+      "invalid\n",
+    );
+    assertEquals(await daemon.readApprovalMode(dir), null);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// --- mergeClaudeSettings removes stale hooks ---
+
+Deno.test("mergeClaudeSettings removes PermissionRequest when switching to manual", async () => {
+  const dir = await makeTempDir();
+  try {
+    // First merge with auto (adds PermissionRequest)
+    await daemon.mergeClaudeSettings(dir, dir, "orchestrator", "auto");
+    let settings = JSON.parse(
+      await Deno.readTextFile(join(dir, ".claude", "settings.local.json")),
+    );
+    assertEquals(settings.hooks.PermissionRequest !== undefined, true);
+
+    // Now merge with manual (should remove PermissionRequest)
+    await daemon.mergeClaudeSettings(dir, dir, "orchestrator", "manual");
+    settings = JSON.parse(
+      await Deno.readTextFile(join(dir, ".claude", "settings.local.json")),
+    );
+    assertEquals(settings.hooks.PermissionRequest, undefined);
+    // Stop hook should still be there
+    assertEquals(settings.hooks.Stop.length, 1);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("mergeClaudeSettings preserves non-jackops PermissionRequest hooks", async () => {
+  const dir = await makeTempDir();
+  try {
+    const settingsDir = join(dir, ".claude");
+    await Deno.mkdir(settingsDir, { recursive: true });
+    // Write settings with a user's own PermissionRequest hook + jackops auto hook
+    await Deno.writeTextFile(
+      join(settingsDir, "settings.local.json"),
+      JSON.stringify({
+        hooks: {
+          PermissionRequest: [
+            {
+              matcher: "*",
+              hooks: [{ type: "command", command: "my-custom-hook.sh" }],
+            },
+            {
+              matcher: "*",
+              hooks: [{
+                type: "command",
+                command: "/path/.jackops/yolo-approve.sh",
+              }],
+            },
+          ],
+        },
+      }),
+    );
+
+    // Switch to manual — should remove jackops hook but keep user hook
+    await daemon.mergeClaudeSettings(dir, dir, "orchestrator", "manual");
+    const settings = JSON.parse(
+      await Deno.readTextFile(join(settingsDir, "settings.local.json")),
+    );
+    assertEquals(settings.hooks.PermissionRequest.length, 1);
+    assertStringIncludes(
+      settings.hooks.PermissionRequest[0].hooks[0].command,
+      "my-custom-hook.sh",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// --- heartbeatAge ---
+
+Deno.test("heartbeatAge returns null when no heartbeat file", async () => {
+  const dir = await makeTempDir();
+  try {
+    assertEquals(await daemon.heartbeatAge(dir, "w1"), null);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("heartbeatAge returns small number for fresh file", async () => {
+  const dir = await makeTempDir();
+  try {
+    const sigDir = join(dir, ".jackops", "signals");
+    await Deno.mkdir(sigDir, { recursive: true });
+    await Deno.writeTextFile(join(sigDir, "w1.heartbeat"), "");
+    const age = await daemon.heartbeatAge(dir, "w1");
+    assertEquals(age !== null, true);
+    assertEquals(age! < 1000, true); // Should be under 1s
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// --- hasNeedsInput / clearNeedsInput ---
+
+Deno.test("hasNeedsInput returns false when no file", async () => {
+  const dir = await makeTempDir();
+  try {
+    assertEquals(await daemon.hasNeedsInput(dir, "w1"), false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("hasNeedsInput returns true when file exists", async () => {
+  const dir = await makeTempDir();
+  try {
+    const sigDir = join(dir, ".jackops", "signals");
+    await Deno.mkdir(sigDir, { recursive: true });
+    await Deno.writeTextFile(join(sigDir, "w1.needs-input"), "idle_prompt");
+    assertEquals(await daemon.hasNeedsInput(dir, "w1"), true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("clearNeedsInput removes needs-input file", async () => {
+  const dir = await makeTempDir();
+  try {
+    const sigDir = join(dir, ".jackops", "signals");
+    await Deno.mkdir(sigDir, { recursive: true });
+    await Deno.writeTextFile(join(sigDir, "w1.needs-input"), "idle_prompt");
+    await daemon.clearNeedsInput(dir, "w1");
+    assertEquals(await daemon.hasNeedsInput(dir, "w1"), false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("clearNeedsInput is idempotent for missing files", async () => {
+  const dir = await makeTempDir();
+  try {
+    await daemon.clearNeedsInput(dir, "w1");
+    await daemon.clearNeedsInput(dir, "w1");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// --- hasExited / clearExited ---
+
+Deno.test("hasExited returns false when no file", async () => {
+  const dir = await makeTempDir();
+  try {
+    assertEquals(await daemon.hasExited(dir, "w1"), false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("hasExited returns true when file exists", async () => {
+  const dir = await makeTempDir();
+  try {
+    const sigDir = join(dir, ".jackops", "signals");
+    await Deno.mkdir(sigDir, { recursive: true });
+    await Deno.writeTextFile(join(sigDir, "w1.exited"), "user_disconnect");
+    assertEquals(await daemon.hasExited(dir, "w1"), true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("clearExited removes exited file", async () => {
+  const dir = await makeTempDir();
+  try {
+    const sigDir = join(dir, ".jackops", "signals");
+    await Deno.mkdir(sigDir, { recursive: true });
+    await Deno.writeTextFile(join(sigDir, "w1.exited"), "crash");
+    await daemon.clearExited(dir, "w1");
+    assertEquals(await daemon.hasExited(dir, "w1"), false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("clearExited is idempotent for missing files", async () => {
+  const dir = await makeTempDir();
+  try {
+    await daemon.clearExited(dir, "w1");
+    await daemon.clearExited(dir, "w1");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// --- clearAllWorkerSignals ---
+
+Deno.test("clearAllWorkerSignals removes all signal files", async () => {
+  const dir = await makeTempDir();
+  try {
+    const sigDir = join(dir, ".jackops", "signals");
+    await Deno.mkdir(sigDir, { recursive: true });
+    await Deno.writeTextFile(join(sigDir, "w1.done"), "");
+    await Deno.writeTextFile(join(sigDir, "w1.heartbeat"), "");
+    await Deno.writeTextFile(join(sigDir, "w1.needs-input"), "idle");
+    await Deno.writeTextFile(join(sigDir, "w1.exited"), "crash");
+    await daemon.clearAllWorkerSignals(dir, "w1");
+    assertEquals(await daemon.hasSignal(dir, "w1"), false);
+    assertEquals(await daemon.hasNeedsInput(dir, "w1"), false);
+    assertEquals(await daemon.hasExited(dir, "w1"), false);
+    assertEquals(await daemon.heartbeatAge(dir, "w1"), null);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// --- signal path helpers ---
+
+Deno.test("needsInputPath returns correct path", () => {
+  assertEquals(
+    daemon.needsInputPath("/project", "w1"),
+    "/project/.jackops/signals/w1.needs-input",
+  );
+});
+
+Deno.test("exitedPath returns correct path", () => {
+  assertEquals(
+    daemon.exitedPath("/project", "w1"),
+    "/project/.jackops/signals/w1.exited",
+  );
+});
+
+// --- buildClaudeSettings: new hooks ---
+
+Deno.test("buildClaudeSettings includes all 7 hook events for auto mode", () => {
+  const settings = daemon.buildClaudeSettings("/base", "w1", "auto");
+  const events = Object.keys(settings.hooks);
+  for (
+    const expected of [
+      "Stop",
+      "Notification",
+      "PreToolUse",
+      "PostToolUse",
+      "UserPromptSubmit",
+      "SessionEnd",
+      "PermissionRequest",
+    ]
+  ) {
+    assertEquals(events.includes(expected), true, `Missing hook: ${expected}`);
+  }
+});
+
+Deno.test("buildClaudeSettings includes new hooks for manual mode (no PermissionRequest)", () => {
+  const settings = daemon.buildClaudeSettings("/base", "w1", "manual");
+  const events = Object.keys(settings.hooks);
+  for (
+    const expected of [
+      "Stop",
+      "Notification",
+      "PreToolUse",
+      "PostToolUse",
+      "UserPromptSubmit",
+      "SessionEnd",
+    ]
+  ) {
+    assertEquals(events.includes(expected), true, `Missing hook: ${expected}`);
+  }
+  assertEquals(events.includes("PermissionRequest"), false);
+});
+
+Deno.test("buildClaudeSettings Notification has 3 matchers", () => {
+  const settings = daemon.buildClaudeSettings("/base", "w1", "manual");
+  assertEquals(settings.hooks.Notification.length, 3);
+  const matchers = settings.hooks.Notification.map(
+    (e: { matcher: string }) => e.matcher,
+  );
+  assertEquals(matchers.includes("idle_prompt"), true);
+  assertEquals(matchers.includes("permission_prompt"), true);
+  assertEquals(matchers.includes("elicitation_dialog"), true);
+});
+
+Deno.test("buildClaudeSettings heartbeat hooks reference heartbeat-hook.sh", () => {
+  const settings = daemon.buildClaudeSettings("/base", "w1", "manual");
+  assertStringIncludes(
+    settings.hooks.PreToolUse[0].hooks[0].command,
+    "heartbeat-hook.sh",
+  );
+  assertStringIncludes(
+    settings.hooks.PostToolUse[0].hooks[0].command,
+    "heartbeat-hook.sh",
+  );
+});
+
+Deno.test("buildClaudeSettings SessionEnd references session-end-hook.sh", () => {
+  const settings = daemon.buildClaudeSettings("/base", "w1", "manual");
+  assertStringIncludes(
+    settings.hooks.SessionEnd[0].hooks[0].command,
+    "session-end-hook.sh",
+  );
+});
+
+// --- extraPermissions ---
+
+Deno.test("buildClaudeSettings with extraPermissions includes them in allow list", () => {
+  const settings = daemon.buildClaudeSettings("/base", "w1", "manual", [
+    "Bash(tmux *)",
+    "Bash(git diff *)",
+  ]);
+  const allow = settings.permissions.allow;
+  assertStringIncludes(allow.join(","), "Bash(jackops *)");
+  assertStringIncludes(allow.join(","), "Bash(tmux *)");
+  assertStringIncludes(allow.join(","), "Bash(git diff *)");
+});
+
+Deno.test("ORCHESTRATOR_PERMISSIONS includes tmux and git permissions", () => {
+  assertStringIncludes(
+    daemon.ORCHESTRATOR_PERMISSIONS.join(","),
+    "Bash(tmux *)",
+  );
+  assertStringIncludes(
+    daemon.ORCHESTRATOR_PERMISSIONS.join(","),
+    "Bash(git diff *)",
+  );
+  assertStringIncludes(
+    daemon.ORCHESTRATOR_PERMISSIONS.join(","),
+    "Bash(git log *)",
+  );
+});
+
+// --- new constants ---
+
+Deno.test("HEARTBEAT_FRESH_MS is positive", () => {
+  assertEquals(daemon.HEARTBEAT_FRESH_MS > 0, true);
+});
+
+Deno.test("MAX_TASK_WALL_MS > TIER3_TIMEOUT_MS", () => {
+  assertEquals(daemon.MAX_TASK_WALL_MS > daemon.TIER3_TIMEOUT_MS, true);
+});
+
+// --- initSignals copies new hook scripts ---
+
+Deno.test("initSignals copies new hook scripts", async () => {
+  const dir = await makeTempDir();
+  try {
+    await daemon.initSignals(dir);
+    for (
+      const name of [
+        "notification-hook.sh",
+        "heartbeat-hook.sh",
+        "prompt-hook.sh",
+        "session-end-hook.sh",
+        "notify-hook.sh",
+      ]
+    ) {
+      const stat = await Deno.stat(join(dir, ".jackops", name));
+      assertEquals(stat.isFile, true, `Missing hook: ${name}`);
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// --- formatTaskPrompt: non-Claude error tip ---
+
+Deno.test("formatTaskPrompt non-Claude includes error tip", () => {
+  const result = daemon.formatTaskPrompt(TASK_FULL, "w1", "codex", "/base");
+  assertStringIncludes(result, "notify-hook.sh error");
+});
+
+// --- OrchestratorState / ORCH_STALL_TIMEOUT_MS ---
+
+Deno.test("ORCH_STALL_TIMEOUT_MS is longer than TIER3_TIMEOUT_MS", () => {
+  assertEquals(daemon.ORCH_STALL_TIMEOUT_MS > daemon.TIER3_TIMEOUT_MS, true);
+});
+
+Deno.test("ORCH_STALL_TIMEOUT_MS is positive", () => {
+  assertEquals(daemon.ORCH_STALL_TIMEOUT_MS > 0, true);
+});
+
+Deno.test("OrchestratorState can be constructed with expected shape", () => {
+  const state: daemon.OrchestratorState = {
+    name: "orchestrator",
+    agent: "claude",
+    lastPaneSnapshot: null,
+    lastSnapshotAt: null,
+    llmEvalCount: 0,
+    escalatedToUser: false,
+    startedAt: Date.now(),
+  };
+  assertEquals(state.name, "orchestrator");
+  assertEquals(state.llmEvalCount, 0);
+  assertEquals(state.escalatedToUser, false);
 });

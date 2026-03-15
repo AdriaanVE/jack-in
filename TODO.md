@@ -9,11 +9,12 @@ be revisited as the codebase grows.
 
 **cli.ts**
 
-- [ ] Extract config loading helper -- `findConfig()` + `loadConfig()` repeated
-      in 5 functions
-- [ ] Extract worker validation helper -- lookup + error message duplicated in
-      `send()` and `attach()`
-- [ ] Extract session existence check -- same guard in `send()` and `attach()`
+- [x] Extract config loading helper -- `findConfig()` + `loadConfig()` repeated
+      in 5 functions (now `loadCliConfig()` in `cli/context.ts`)
+- [x] Extract worker validation helper -- lookup + error message duplicated in
+      `send()` and `attach()` (now in `cli/commands/worker.ts`)
+- [x] Extract session existence check -- same guard in `send()` and `attach()`
+      (now `requireActiveSession()` in `cli/context.ts`)
 - [ ] Stdin prompt in `down()` reads 4-byte buffer -- fragile, replace with
       readline when adding more prompts
 - [ ] Partial startup failure leaves orphaned tmux session -- consider rollback
@@ -145,3 +146,15 @@ be revisited as the codebase grows.
 - [ ] Live updates via SSE as workers produce output
 - [ ] Reference: [wesm/agentsview](https://github.com/wesm/agentsview) --
       Go/SQLite/Svelte 5 stack, supports 11 agents
+
+- [x] Split up CLI.ts into multiple files (e.g. `cli/send.ts`, `cli/attach.ts`)
+      (now `src/cli/` with `main.ts`, `context.ts`, and `commands/`)
+- [ ] split up daemon.ts into multiple files
+
+- [] DO workers need the skill locally? I dont think so, only orchestrators do,
+  check this in init
+- [ ] Write spawn prompt to file and pass via `$(cat ...)` instead of inline --
+      long multi-line prompts look noisy in tmux pane (match orchestrator
+      pattern)
+- [ ] Orchestrator/init instructions: always create a new branch for changes,
+      never merge to main unless explicitly told by the user

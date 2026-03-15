@@ -103,12 +103,48 @@ Deno.test("complete moves task to complete", async () => {
   }
 });
 
-Deno.test("reject moves task to rejected with feedback", async () => {
+Deno.test("review moves current task to review", async () => {
   const dir = await makeTempDir();
   try {
     await tq.init(dir);
     await tq.create(dir, TASK_A);
     await tq.claim(dir, "task-001", "impl-1");
+
+    await tq.review(dir, "task-001");
+
+    const entry = await tq.get(dir, "task-001");
+    assertEquals(entry!.state, "review");
+    assertEquals(entry!.task.assignee, "impl-1");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("approve moves reviewed task to complete", async () => {
+  const dir = await makeTempDir();
+  try {
+    await tq.init(dir);
+    await tq.create(dir, TASK_A);
+    await tq.claim(dir, "task-001", "impl-1");
+    await tq.review(dir, "task-001");
+
+    await tq.approve(dir, "task-001");
+
+    const entry = await tq.get(dir, "task-001");
+    assertEquals(entry!.state, "complete");
+    assertEquals(entry!.task.assignee, "impl-1");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("reject moves reviewed task to rejected with feedback", async () => {
+  const dir = await makeTempDir();
+  try {
+    await tq.init(dir);
+    await tq.create(dir, TASK_A);
+    await tq.claim(dir, "task-001", "impl-1");
+    await tq.review(dir, "task-001");
 
     const task = await tq.reject(dir, "task-001", "missing error handling");
 
@@ -128,6 +164,7 @@ Deno.test("retry moves rejected task back to pending", async () => {
     await tq.init(dir);
     await tq.create(dir, TASK_A);
     await tq.claim(dir, "task-001", "impl-1");
+    await tq.review(dir, "task-001");
     await tq.reject(dir, "task-001", "needs work");
 
     const task = await tq.retry(dir, "task-001");
@@ -197,6 +234,7 @@ Deno.test("counts returns task counts by state", async () => {
     const c = await tq.counts(dir);
     assertEquals(c.pending, 1);
     assertEquals(c.current, 1);
+    assertEquals(c.review, 0);
     assertEquals(c.complete, 0);
     assertEquals(c.rejected, 0);
   } finally {
@@ -243,7 +281,84 @@ Deno.test("ready returns tasks with no dependencies", async () => {
   }
 });
 
-Deno.test("full lifecycle: create -> claim -> reject -> retry -> claim -> complete", async () => {
+Deno.test("ready resolves summary-based depends_on", async () => {
+  const dir = await makeTempDir();
+  try {
+    await tq.init(dir);
+    const taskA = await tq.create(dir, TASK_A);
+    // Create task with depends_on referencing summary string (not ID)
+    await tq.create(dir, {
+      id: "task-003",
+      summary: "Deploy auth",
+      description: "Deploy the auth module",
+      depends_on: [taskA.summary], // "Add auth module" — a summary, not an ID
+    });
+
+    // taskA not complete, so task-003 not ready
+    let readyTasks = await tq.ready(dir);
+    assertEquals(readyTasks.length, 1);
+    assertEquals(readyTasks[0].id, "task-001");
+
+    // Complete taskA
+    await tq.claim(dir, "task-001", "impl-1");
+    await tq.complete(dir, "task-001");
+
+    // Now task-003 is ready (summary match)
+    readyTasks = await tq.ready(dir);
+    assertEquals(readyTasks.length, 1);
+    assertEquals(readyTasks[0].id, "task-003");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("seed resolves depends_on summaries to task IDs", async () => {
+  const dir = await makeTempDir();
+  try {
+    await tq.init(dir);
+    await tq.seed(dir, [
+      { summary: "Explore codebase" },
+      { summary: "Add tests", depends_on: ["Explore codebase"] },
+    ]);
+
+    const all = await tq.list(dir, "pending");
+    assertEquals(all.length, 2);
+
+    const explore = all.find((e) => e.task.summary === "Explore codebase")!;
+    const tests = all.find((e) => e.task.summary === "Add tests")!;
+
+    // depends_on should be resolved to the actual task ID
+    assertEquals(tests.task.depends_on, [explore.task.id]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("seed resolves depends_on against existing tasks", async () => {
+  const dir = await makeTempDir();
+  try {
+    await tq.init(dir);
+    // Create an existing task first
+    await tq.create(dir, {
+      id: "existing-1",
+      summary: "Setup project",
+      description: "Setup project",
+    });
+
+    // Seed a task that depends on the existing one by summary
+    await tq.seed(dir, [
+      { summary: "Build feature", depends_on: ["Setup project"] },
+    ]);
+
+    const all = await tq.list(dir, "pending");
+    const feature = all.find((e) => e.task.summary === "Build feature")!;
+    assertEquals(feature.task.depends_on, ["existing-1"]);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("full lifecycle: create -> claim -> review -> reject -> retry -> claim -> review -> approve", async () => {
   const dir = await makeTempDir();
   try {
     await tq.init(dir);
@@ -251,6 +366,7 @@ Deno.test("full lifecycle: create -> claim -> reject -> retry -> claim -> comple
 
     // First attempt
     await tq.claim(dir, "task-001", "impl-1");
+    await tq.review(dir, "task-001");
     await tq.reject(dir, "task-001", "missing tests");
 
     // Retry
@@ -259,7 +375,8 @@ Deno.test("full lifecycle: create -> claim -> reject -> retry -> claim -> comple
 
     // Second attempt
     await tq.claim(dir, "task-001", "impl-2");
-    await tq.complete(dir, "task-001");
+    await tq.review(dir, "task-001");
+    await tq.approve(dir, "task-001");
 
     const entry = await tq.get(dir, "task-001");
     assertEquals(entry!.state, "complete");

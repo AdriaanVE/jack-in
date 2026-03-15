@@ -1,6 +1,8 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   AGENT_NAMES,
+  AGENT_PREFERENCE,
+  initCommand,
   isAgentType,
   shellEscape,
   spawnCommand,
@@ -95,4 +97,34 @@ Deno.test("spawnCommand skips instructions when null", () => {
 Deno.test("spawnCommand skips instructions when undefined", () => {
   const cmd = spawnCommand("claude", "do stuff");
   assertEquals(cmd, "claude 'do stuff'");
+});
+
+// --- initCommand ---
+
+Deno.test("initCommand claude reads prompt from file", () => {
+  const cmd = initCommand("claude", "/tmp/prompt.md");
+  assertStringIncludes(cmd, "claude");
+  assertStringIncludes(cmd, "cat");
+  assertStringIncludes(cmd, "/tmp/prompt.md");
+  // Should NOT contain -p or --full-auto
+  assertEquals(cmd.includes("-p"), false);
+});
+
+Deno.test("initCommand codex does not use --full-auto", () => {
+  const cmd = initCommand("codex", "/tmp/prompt.md");
+  assertStringIncludes(cmd, "codex");
+  assertStringIncludes(cmd, "cat");
+  assertEquals(cmd.includes("--full-auto"), false);
+});
+
+Deno.test("initCommand escapes prompt file path", () => {
+  const cmd = initCommand("claude", "/tmp/my prompt.md");
+  assertStringIncludes(cmd, "'/tmp/my prompt.md'");
+});
+
+// --- AGENT_PREFERENCE ---
+
+Deno.test("AGENT_PREFERENCE order is claude first", () => {
+  assertEquals(AGENT_PREFERENCE[0], "claude");
+  assertEquals(AGENT_PREFERENCE.length, 4);
 });

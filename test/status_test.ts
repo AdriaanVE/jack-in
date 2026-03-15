@@ -1,5 +1,9 @@
 import { assertEquals } from "@std/assert";
-import { formatStatus, type StatusInfo } from "../src/status.ts";
+import {
+  formatJsonStatus,
+  formatStatus,
+  type StatusInfo,
+} from "../src/status.ts";
 import type { Config } from "../src/config.ts";
 
 const testConfig: Config = {
@@ -18,7 +22,12 @@ const testConfig: Config = {
       role: "executor",
     },
   ],
-  orchestrator: { poll_interval: 5000, max_retries: 2, approval: "manual" },
+  orchestrator: {
+    poll_interval: 5000,
+    max_retries: 2,
+    approval: "manual",
+    agent: "claude",
+  },
   startup_instructions: null,
 };
 
@@ -166,19 +175,21 @@ Deno.test("formatStatus shows yolo approval", () => {
 });
 
 Deno.test("formatStatus shows task counts", () => {
-  const tasks = { pending: 3, current: 1, complete: 2, rejected: 0 };
+  const tasks = { pending: 3, current: 1, review: 0, complete: 2, rejected: 0 };
   const output = formatStatus(
     testConfig,
     makeInfo({ statuses: [defaultWorker], tasks }),
   );
   assertEquals(
-    output.includes("Tasks: 3 pending, 1 current, 2 complete, 0 rejected"),
+    output.includes(
+      "Tasks: 3 pending, 1 current, 0 review, 2 complete, 0 rejected",
+    ),
     true,
   );
 });
 
 Deno.test("formatStatus hides tasks when all zero", () => {
-  const tasks = { pending: 0, current: 0, complete: 0, rejected: 0 };
+  const tasks = { pending: 0, current: 0, review: 0, complete: 0, rejected: 0 };
   const output = formatStatus(
     testConfig,
     makeInfo({ statuses: [defaultWorker], tasks }),
@@ -192,4 +203,50 @@ Deno.test("formatStatus hides tasks when null", () => {
     makeInfo({ statuses: [defaultWorker], tasks: null }),
   );
   assertEquals(output.includes("Tasks:"), false);
+});
+
+Deno.test("formatJsonStatus returns structured output", () => {
+  const tasks = { pending: 2, current: 1, review: 1, complete: 3, rejected: 0 };
+  const statuses = [
+    {
+      name: "backend",
+      agent: "claude",
+      state: "working" as const,
+      worktree: ".w-test-app-backend",
+    },
+  ];
+  const result = formatJsonStatus(
+    testConfig,
+    makeInfo({ statuses, tasks, daemon: { running: true } }),
+  );
+  assertEquals(result.session, "jackops-test-app");
+  assertEquals(result.daemon.running, true);
+  assertEquals(result.workers.length, 1);
+  assertEquals(result.workers[0].name, "backend");
+  assertEquals(result.workers[0].branch, "jackops/test-app/backend");
+  assertEquals(result.tasks.review, 1);
+  assertEquals(result.tasks.pending, 2);
+});
+
+Deno.test("formatJsonStatus defaults tasks to zeros when null", () => {
+  const result = formatJsonStatus(
+    testConfig,
+    makeInfo({ statuses: [defaultWorker], tasks: null }),
+  );
+  assertEquals(result.tasks.pending, 0);
+  assertEquals(result.tasks.review, 0);
+  assertEquals(result.tasks.complete, 0);
+});
+
+Deno.test("formatStatus uses runtime approval mode over config", () => {
+  // Config says manual, runtime says yolo
+  const output = formatStatus(
+    testConfig,
+    makeInfo({
+      statuses: [defaultWorker],
+      runtimeApproval: "yolo",
+    }),
+  );
+  assertEquals(output.includes("Approval: yolo"), true);
+  assertEquals(output.includes("manual"), false);
 });

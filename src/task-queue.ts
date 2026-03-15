@@ -2,12 +2,18 @@
 
 import { join } from "@std/path";
 
-export type TaskState = "pending" | "current" | "complete" | "rejected";
+export type TaskState =
+  | "pending"
+  | "current"
+  | "review"
+  | "complete"
+  | "rejected";
 export type TaskCounts = Record<TaskState, number>;
 
 export const TASK_STATES: TaskState[] = [
   "pending",
   "current",
+  "review",
   "complete",
   "rejected",
 ];
@@ -113,6 +119,16 @@ export function complete(base: string, taskId: string): Promise<Task> {
   return moveTask(base, taskId, "current", "complete");
 }
 
+/** Send a current task for review. Moves current/ -> review/. */
+export function review(base: string, taskId: string): Promise<Task> {
+  return moveTask(base, taskId, "current", "review");
+}
+
+/** Approve a reviewed task. Moves review/ -> complete/. */
+export function approve(base: string, taskId: string): Promise<Task> {
+  return moveTask(base, taskId, "review", "complete");
+}
+
 /** Unclaim a current task, moving it back to pending. */
 export function unclaim(base: string, taskId: string): Promise<Task> {
   return moveTask(base, taskId, "current", "pending", {
@@ -120,13 +136,13 @@ export function unclaim(base: string, taskId: string): Promise<Task> {
   });
 }
 
-/** Reject a current task with feedback. Moves current/ -> rejected/. */
+/** Reject a reviewed task with feedback. Moves review/ -> rejected/. */
 export function reject(
   base: string,
   taskId: string,
   feedback: string,
 ): Promise<Task> {
-  return moveTask(base, taskId, "current", "rejected", { feedback });
+  return moveTask(base, taskId, "review", "rejected", { feedback });
 }
 
 /** Retry a rejected task. Moves rejected/ -> pending/, increments retries. */
@@ -187,11 +203,13 @@ export async function ready(base: string): Promise<Task[]> {
     list(base, "complete"),
   ]);
   const completeIds = new Set(completed.map((e) => e.task.id));
+  const completeSummaries = new Set(completed.map((e) => e.task.summary));
 
   return pending
     .filter((e) => {
       const deps = e.task.depends_on ?? [];
-      return deps.every((d) => completeIds.has(d));
+      // Match by ID or summary so both resolved and unresolved deps work
+      return deps.every((d) => completeIds.has(d) || completeSummaries.has(d));
     })
     .map((e) => e.task);
 }
@@ -203,6 +221,7 @@ export async function counts(
   const result: TaskCounts = {
     pending: 0,
     current: 0,
+    review: 0,
     complete: 0,
     rejected: 0,
   };
@@ -227,17 +246,31 @@ export async function seed(base: string, tasks: TaskSeed[]): Promise<number> {
   await init(base);
   const existing = await list(base);
   const existingSummaries = new Set(existing.map((e) => e.task.summary));
+
+  // Build summary->id map from existing tasks so depends_on can reference them
+  const summaryToId = new Map<string, string>();
+  for (const e of existing) {
+    summaryToId.set(e.task.summary, e.task.id);
+  }
+
   let seeded = 0;
   for (const t of tasks) {
     if (existingSummaries.has(t.summary)) continue;
+    const id = generateId();
+
+    // Resolve depends_on summary strings to task IDs
+    const resolvedDeps = t.depends_on
+      ?.map((dep) => summaryToId.get(dep) ?? dep);
+
     await create(base, {
-      id: generateId(),
+      id,
       summary: t.summary,
       description: t.description ?? t.summary,
       files: t.files,
       acceptance: t.acceptance,
-      depends_on: t.depends_on,
+      depends_on: resolvedDeps,
     });
+    summaryToId.set(t.summary, id);
     seeded++;
   }
   return seeded;
