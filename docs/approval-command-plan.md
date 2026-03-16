@@ -50,8 +50,8 @@ agents not switched.
 ### Option B: Restart daemon with new mode
 
 1. Rewrite all Claude settings files
-2. Kill daemon process in dashboard window
-3. Re-send `jackops daemon --approval <mode>` to dashboard
+2. Kill daemon process in dashboard-orchestrator window
+3. Re-send `jackops daemon --approval <mode>` to dashboard-orchestrator
 
 **Pros**: Simple, daemon gets mode via CLI arg **Cons**: Loses in-memory worker
 state (watchdog timers, LLM eval counts, pane snapshots). Brief monitoring gap

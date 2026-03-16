@@ -72,12 +72,13 @@ Requires the agent CLIs to be installed (`claude`, `codex`, `opencode`,
 tmux session: jackops-<project>
 +------------------------------------------------------------------+
 |                                                                  |
-|  [window 0: dashboard]   [window 1: w1]   [window 2: w2]  ...  |
-|  +--------------------+  +--------------+  +--------------+     |
-|  | task queue status  |  | claude       |  | codex        |     |
-|  | worker status      |  | worktree: .w1|  | worktree: .w2|     |
-|  | recent activity    |  |              |  |              |     |
-|  +--------------------+  +--------------+  +--------------+     |
+|  [window 0: dashboard-orchestrator]   [window 1: w1]   [window 2: w2]  ...  |
+|  +-----------------------------+  +--------------+  +--------------+     |
+|  | pane 0: daemon              |  | claude       |  | codex        |     |
+|  |   task queue / worker status|  | worktree: .w1|  | worktree: .w2|     |
+|  |-----------------------------|  |              |  |              |     |
+|  | pane 1: orchestrator agent  |  |              |  |              |     |
+|  +-----------------------------+  +--------------+  +--------------+     |
 |                                |                |                |
 |                          hooks/IPC        send-keys/capture      |
 |                                |                |                |

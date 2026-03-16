@@ -102,7 +102,7 @@ export async function getStatus(
     };
   }));
 
-  const dashboard = paneByWindow.get("dashboard");
+  const dashboard = paneByWindow.get("dashboard-orchestrator");
   const daemon: DaemonStatus = {
     running: !!dashboard && paneIsRunning(dashboard),
   };

@@ -1167,7 +1167,7 @@ export async function checkOrchestrator(
   state: OrchestratorState,
   approval: ApprovalMode,
 ): Promise<void> {
-  const target = `${session}:orchestrator`;
+  const target = `${session}:dashboard-orchestrator.1`;
   let paneContent: string;
   try {
     paneContent = await tmux.capturePane(target, 50);

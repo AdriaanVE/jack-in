@@ -17,8 +17,8 @@ or assignments happen.
   - Tier 1 (0-60s): trust stop hook / heartbeat
   - Tier 2 (60-120s): pane snapshot diff, nudge if unchanged
   - Tier 3 (120s+): LLM eval (auto), Enter (yolo), or user notification (manual)
-- The orchestrator agent runs in `${session}:orchestrator` tmux window but has
-  no `WorkerState` entry
+- The orchestrator agent runs in `${session}:dashboard-orchestrator.1` (bottom
+  pane of the dashboard-orchestrator window) but has no `WorkerState` entry
 
 ## Design
 
@@ -57,7 +57,7 @@ differences from workers:
 
 3. **New `checkOrchestrator()` function** called from the main loop after
    `tick()`:
-   - Captures pane `${session}:orchestrator`
+   - Captures pane `${session}:dashboard-orchestrator.1`
    - If capture fails (pane gone): log warning, notify user, set
      `escalatedToUser`
    - Pane snapshot diff: if unchanged for 2 consecutive ticks -> stall detected

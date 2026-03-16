@@ -123,7 +123,7 @@ export async function up(args: string[]): Promise<void> {
   }
 
   await tmux.createSession(session);
-  await tmux.renameWindow(session, 0, "dashboard");
+  await tmux.renameWindow(session, 0, "dashboard-orchestrator");
 
   const reusable = new Map(
     stale.map((e) => [e.path.split("/").pop() ?? "", e.path]),
@@ -206,9 +206,11 @@ export async function up(args: string[]): Promise<void> {
     if (envFile) {
       console.log(`Daemon env written to ${envFile}`);
     }
-    const target = `${session}:dashboard`;
+    const target = `${session}:dashboard-orchestrator`;
     await tmux.sendKeys(target, daemonCommand(opts.approval, envFile));
-    console.log(`\nOrchestrator daemon started in dashboard pane.`);
+    console.log(
+      `\nOrchestrator daemon started in dashboard-orchestrator pane.`,
+    );
   }
 
   const orchAgentType = config.orchestrator.agent;
@@ -245,19 +247,16 @@ export async function up(args: string[]): Promise<void> {
       }`,
     ].join("\n");
     await Deno.writeTextFile(promptPath, orchPrompt);
-    await tmux.createWindow(session, "orchestrator");
-    const orchTarget = `${session}:orchestrator`;
+    await tmux.splitWindow(session, "dashboard-orchestrator", 70);
+    const orchTarget = `${session}:dashboard-orchestrator.1`;
     const cmd = initCommand(orchAgentType, promptPath);
     await tmux.sendKeys(orchTarget, `cd ${shellEscape(base)} && ${cmd}`);
     console.log(
-      `Orchestrator agent (${orchAgentType}) started in 'orchestrator' window.`,
+      `Orchestrator agent (${orchAgentType}) started in dashboard-orchestrator pane.`,
     );
   }
 
-  const defaultWindow = (opts.orchestratorAgent && orchAgentType && hasTasks)
-    ? "orchestrator"
-    : "dashboard";
-  await tmux.selectWindow(session, defaultWindow);
+  await tmux.selectWindow(session, "dashboard-orchestrator");
 
   if (await tmux.hasSession(INIT_SESSION)) {
     if (Deno.env.get("TMUX")) {
@@ -271,6 +270,6 @@ export async function up(args: string[]): Promise<void> {
     console.log(`Killed init session '${INIT_SESSION}'.`);
   }
 
-  console.log(`\nSwarm running in tmux session '${session}'.`);
-  console.log(`Attach with: tmux attach -t ${session}`);
+  console.log(`\nSwarm running in tmux session '${session}'. Attaching...`);
+  await attachSession(session);
 }
