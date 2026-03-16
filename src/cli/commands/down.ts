@@ -46,21 +46,35 @@ export async function down(): Promise<void> {
     return;
   }
 
-  console.log(`\nWorktrees to remove:`);
-  for (const e of jackopsWorktrees) {
-    console.log(`  ${e.path}`);
-  }
+  const dirtyCounts = await Promise.all(
+    jackopsWorktrees.map(async (e) => ({
+      entry: e,
+      dirty: await worktree.dirtyCount(e.path),
+    })),
+  );
+  const anyDirty = dirtyCounts.some((d) => d.dirty > 0);
 
-  const answer = await prompt("\nRemove worktrees? [y/N] ");
+  if (anyDirty) {
+    console.log(`\nWorktrees to remove:`);
+    for (const { entry, dirty } of dirtyCounts) {
+      console.log(`  ${entry.path} (${worktree.formatDirtyLabel(dirty)})`);
+    }
 
-  if (answer === "y") {
-    const removed = await worktree.cleanup(
-      base,
-      project ?? "",
-      jackopsWorktrees,
+    const answer = await prompt(
+      "\nWorktrees contain uncommitted changes. Remove anyway? [y/N] ",
     );
-    console.log(`Removed ${removed.length} worktrees.`);
-  } else {
-    console.log("Worktrees kept.");
+    if (answer !== "y") {
+      console.log("Worktrees kept.");
+      return;
+    }
   }
+
+  const removed = await worktree.cleanup(
+    base,
+    project ?? "",
+    jackopsWorktrees,
+  );
+  console.log(
+    `Removed ${removed.length} worktree${removed.length !== 1 ? "s" : ""}.`,
+  );
 }

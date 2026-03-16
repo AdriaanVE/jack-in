@@ -126,6 +126,13 @@ export async function reset(path: string): Promise<void> {
   }
 }
 
+/** Format a dirty-count label for display. */
+export function formatDirtyLabel(dirty: number): string {
+  return dirty > 0
+    ? `dirty - ${dirty} uncommitted change${dirty > 1 ? "s" : ""}`
+    : "clean";
+}
+
 export function isJackopsWorktree(
   entry: WorktreeInfo,
   project?: string,

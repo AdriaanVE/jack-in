@@ -34,7 +34,14 @@ Before entering the orchestration loop:
    task is still in `current`, force it to review with
    `jackops tasks complete <id>`
 4. When nothing needs attention, wait 30 seconds and check again
-5. Repeat
+5. When **all tasks are complete** (0 pending, 0 current, 0 review): analyze the
+   project state and either propose new tasks or suggest `jackops down`. Check
+   for a `TODO.md` in the project root -- if it exists, use it as a source of
+   follow-up work. Also look at incomplete features, TODOs in the codebase, test
+   gaps, or documentation needs. Create follow-up tasks with `jackops tasks add`
+   if there is meaningful work remaining. If the project goals are met, tell the
+   user the swarm is idle and suggest shutting down.
+6. Repeat
 
 ## Reviewing tasks
 
