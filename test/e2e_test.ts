@@ -106,7 +106,7 @@ Deno.test({
         // Verify windows were created
         const windows = await tmux.listWindows(SESSION);
         const names = windows.map((w) => w.name);
-        assertEquals(names.includes("dashboard"), true);
+        assertEquals(names.includes("dashboard-orchestrator"), true);
         assertEquals(names.includes("worker1"), true);
         assertEquals(names.includes("worker2"), true);
 

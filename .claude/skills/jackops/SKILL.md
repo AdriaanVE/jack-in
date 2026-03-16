@@ -221,8 +221,8 @@ tmux attach -t jackops-<project>   # Attach to session
 Ctrl-b w                           # List all windows
 ```
 
-Window 0 is the dashboard (daemon runs here). Workers are windows 1+. The
-orchestrator agent runs in the `orchestrator` window.
+Window 0 is `dashboard-orchestrator` with two panes: the daemon (top, pane 0)
+and the orchestrator agent (bottom, pane 1). Workers are windows 1+.
 
 ## Monitoring
 

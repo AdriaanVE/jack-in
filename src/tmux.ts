@@ -97,6 +97,7 @@ export async function listWindows(session: string): Promise<WindowInfo[]> {
 
 export interface PaneInfo {
   windowName: string;
+  paneIndex: number;
   paneDead: boolean;
   currentCommand: string;
 }
@@ -108,13 +109,18 @@ export async function listPanes(session: string): Promise<PaneInfo[]> {
     session,
     "-a",
     "-F",
-    "#{window_name}\t#{pane_dead}\t#{pane_current_command}",
+    "#{window_name}\t#{pane_index}\t#{pane_dead}\t#{pane_current_command}",
   ]);
   if (!success) throw new Error(`tmux list-panes failed: ${stderr}`);
   if (!stdout) return [];
   return stdout.split("\n").map((line) => {
-    const [windowName, dead, cmd] = line.split("\t");
-    return { windowName, paneDead: dead === "1", currentCommand: cmd ?? "" };
+    const [windowName, idx, dead, cmd] = line.split("\t");
+    return {
+      windowName,
+      paneIndex: parseInt(idx),
+      paneDead: dead === "1",
+      currentCommand: cmd ?? "",
+    };
   });
 }
 
@@ -166,6 +172,25 @@ export async function displayMessage(
     message,
   ]);
   if (!success) throw new Error(`tmux display-message failed: ${stderr}`);
+}
+
+/** Split the target window horizontally, creating a new pane below. */
+export async function splitWindow(
+  session: string,
+  targetWindow: string,
+  percentage?: number,
+): Promise<void> {
+  const args = [
+    "split-window",
+    "-t",
+    `${session}:${targetWindow}`,
+    "-v",
+  ];
+  if (percentage !== undefined) {
+    args.push("-p", String(percentage));
+  }
+  const { success, stderr } = await run(args);
+  if (!success) throw new Error(`tmux split-window failed: ${stderr}`);
 }
 
 /** Rename the first window (index 0) created with the session. */

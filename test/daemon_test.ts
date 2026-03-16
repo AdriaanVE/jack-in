@@ -622,11 +622,25 @@ Deno.test("paneContainsMarker returns false when no marker present", () => {
   assertEquals(daemon.paneContainsMarker(pane, "task-001"), false);
 });
 
-Deno.test("paneContainsMarker detects marker surrounded by other text", () => {
+Deno.test("paneContainsMarker rejects marker inline with other text", () => {
   const pane = `lots of output
 here is JACKOPS_TASK_COMPLETE:task-abc inline
 more output`;
-  assertEquals(daemon.paneContainsMarker(pane, "task-abc"), true);
+  assertEquals(daemon.paneContainsMarker(pane, "task-abc"), false);
+});
+
+Deno.test("paneContainsMarker rejects marker in instruction line", () => {
+  const pane =
+    `Also output exactly this on its own line: JACKOPS_TASK_COMPLETE:task-001
+> working...`;
+  assertEquals(daemon.paneContainsMarker(pane, "task-001"), false);
+});
+
+Deno.test("paneContainsMarker matches marker with leading/trailing whitespace", () => {
+  const pane = `output
+  JACKOPS_TASK_COMPLETE:task-001
+done`;
+  assertEquals(daemon.paneContainsMarker(pane, "task-001"), true);
 });
 
 // --- tier constants ---

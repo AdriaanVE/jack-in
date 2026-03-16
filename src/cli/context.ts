@@ -50,8 +50,8 @@ export async function prompt(message: string): Promise<string> {
 
 export async function attachSession(session: string): Promise<void> {
   if (Deno.env.get("TMUX")) {
-    await tmux.selectWindow(session, "dashboard");
-  } else {
+    await tmux.selectWindow(session, "dashboard-orchestrator");
+  } else if (Deno.stdin.isTerminal()) {
     const cmd = new Deno.Command("tmux", {
       args: ["attach", "-t", session],
       stdin: "inherit",

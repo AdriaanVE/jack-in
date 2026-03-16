@@ -114,13 +114,14 @@ startup_instructions:
 
 - **Workers** are AI agents running in isolated git worktrees. Each gets a tmux
   window. They pick up tasks and implement them.
-- **The daemon** is a mechanical process that runs in the dashboard window. It
-  assigns pending tasks to idle workers, detects when they finish, and moves
-  tasks through the queue. It does NOT make judgment calls.
-- **The orchestrator agent** is an LLM that runs in its own tmux window. It
-  reviews completed work (reads git diffs), approves or rejects tasks, creates
-  follow-up tasks, and can unstick workers when the daemon's signal detection
-  fails. It is the brain of the swarm.
+- **The daemon** is a mechanical process that runs in the top pane of the
+  `dashboard-orchestrator` window. It assigns pending tasks to idle workers,
+  detects when they finish, and moves tasks through the queue. It does NOT make
+  judgment calls.
+- **The orchestrator agent** is an LLM that runs in the bottom pane of the
+  `dashboard-orchestrator` window. It reviews completed work (reads git diffs),
+  approves or rejects tasks, creates follow-up tasks, and can unstick workers
+  when the daemon's signal detection fails. It is the brain of the swarm.
 - **Task lifecycle**: `pending/ -> current/ -> review/ -> complete/` (or
   `rejected/ -> pending/` for retries).
 
@@ -234,7 +235,7 @@ Then tell the user:
 
 Also give them a quick tmux cheat sheet for navigating the swarm session:
 
-- `Ctrl-b w` -- list all windows (workers, dashboard, orchestrator) and pick one
+- `Ctrl-b w` -- list all windows (dashboard-orchestrator, workers) and pick one
 - `Ctrl-b n` / `Ctrl-b p` -- next / previous window
 - `Ctrl-b <number>` -- jump to window by index
 - `Ctrl-b d` -- detach from the session (swarm keeps running)

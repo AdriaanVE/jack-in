@@ -129,6 +129,14 @@ be revisited as the codebase grows.
       `deno install jsr:@adriaanve/jackops`
 - [ ] Homebrew tap -- formula pointing at GitHub Release binaries
 
+## Future: cmux API integration
+
+- [ ] When running inside cmux, use the V2 JSON-RPC Unix socket API
+      (`pane.create`, `surface.split`, etc.) instead of tmux commands for pane
+      management. Detect via `$CMUX_SOCKET_PATH` or `$CMUX_SOCKET` env var.
+      Python client reference: `cmux/tests_v2/cmux.py`. Deno client would use
+      `Deno.connect({ transport: "unix", path: socketPath })`.
+
 ## Future: Terminal UI
 
 - [ ] Interactive status with live-updating worker states, task progress, and
