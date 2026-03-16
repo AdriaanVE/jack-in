@@ -58,7 +58,7 @@ const NOTIFICATION_MATCHERS = [
   "elicitation_dialog",
 ] as const;
 
-interface WorkerState {
+export interface WorkerState {
   name: string;
   agent: string;
   currentTask: string | null;
@@ -77,6 +77,15 @@ export interface OrchestratorState {
   llmEvalCount: number;
   escalatedToUser: boolean;
   startedAt: number;
+}
+
+/** Shared daemon state for TUI consumption. */
+export interface DaemonContext {
+  workers: Map<string, WorkerState>;
+  orchState: OrchestratorState | null;
+  taskCounts: tq.TaskCounts;
+  approval: ApprovalMode;
+  session: string;
 }
 
 // --- Generic signal file helpers ---
@@ -581,6 +590,8 @@ export interface DaemonOptions {
   config: Config;
   base: string;
   signal: AbortSignal;
+  /** Called once after context is initialized, before the poll loop starts. */
+  onContext?: (ctx: DaemonContext) => void;
 }
 
 export async function run(opts: DaemonOptions): Promise<void> {
@@ -589,7 +600,15 @@ export async function run(opts: DaemonOptions): Promise<void> {
   const interval = config.orchestrator.poll_interval;
   let approval = config.orchestrator.approval;
 
-  const workers = new Map<string, WorkerState>();
+  const ctx: DaemonContext = {
+    workers: new Map<string, WorkerState>(),
+    orchState: null,
+    taskCounts: { pending: 0, current: 0, review: 0, complete: 0, rejected: 0 },
+    approval,
+    session,
+  };
+
+  const workers = ctx.workers;
   for (const w of config.workers) {
     if (w.role === "executor") {
       workers.set(w.name, {
@@ -610,7 +629,7 @@ export async function run(opts: DaemonOptions): Promise<void> {
     return;
   }
 
-  const orchState: OrchestratorState | null = config.orchestrator.agent
+  ctx.orchState = config.orchestrator.agent
     ? {
       name: "orchestrator",
       agent: config.orchestrator.agent as string,
@@ -621,6 +640,10 @@ export async function run(opts: DaemonOptions): Promise<void> {
       startedAt: Date.now(),
     }
     : null;
+  const orchState = ctx.orchState;
+
+  // Start TUI early so the dashboard is visible during setup
+  if (opts.onContext) opts.onContext(ctx);
 
   // Set up signal files and hooks
   await initSignals(base);
@@ -680,6 +703,7 @@ export async function run(opts: DaemonOptions): Promise<void> {
     if (newMode && newMode !== approval) {
       log.info`Approval mode changed: ${approval} -> ${newMode}`;
       approval = newMode;
+      ctx.approval = newMode;
       // Reset watchdog state so escalations are re-evaluated under new mode
       for (const [, state] of workers) {
         if (state.currentTask) resetWatchdog(state);
@@ -699,6 +723,7 @@ export async function run(opts: DaemonOptions): Promise<void> {
     }
 
     const c = await tq.counts(base);
+    ctx.taskCounts = c;
     log
       .debug`Tick done. Tasks: ${c.pending} pending, ${c.current} current, ${c.review} review, ${c.complete} complete, ${c.rejected} rejected`;
 
@@ -1150,6 +1175,18 @@ async function watchdog(
         await tmux.displayMessage(session, msg);
       } catch {
         // display-message may fail
+      }
+    } else if (result.status === "idle") {
+      // Agent is done — write signal so the next tick completes the task.
+      log
+        .info`[tier3-idle] ${state.name}: LLM says idle, writing done signal`;
+      try {
+        const sig = signalPath(base, state.name);
+        await Deno.writeTextFile(sig, "");
+      } catch (e) {
+        log.warn`[tier3-idle] Failed to write signal for ${state.name}: ${
+          e instanceof Error ? e.message : e
+        }`;
       }
     } else {
       log.debug`${state.name}: LLM says "${result.status}" — no action needed`;

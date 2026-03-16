@@ -98,6 +98,7 @@ export async function listWindows(session: string): Promise<WindowInfo[]> {
 export interface PaneInfo {
   windowName: string;
   paneIndex: number;
+  paneId: string; // stable %N id
   paneDead: boolean;
   currentCommand: string;
 }
@@ -107,17 +108,18 @@ export async function listPanes(session: string): Promise<PaneInfo[]> {
     "list-panes",
     "-t",
     session,
-    "-a",
+    "-s",
     "-F",
-    "#{window_name}\t#{pane_index}\t#{pane_dead}\t#{pane_current_command}",
+    "#{window_name}\t#{pane_index}\t#{pane_dead}\t#{pane_current_command}\t#{pane_id}",
   ]);
   if (!success) throw new Error(`tmux list-panes failed: ${stderr}`);
   if (!stdout) return [];
   return stdout.split("\n").map((line) => {
-    const [windowName, idx, dead, cmd] = line.split("\t");
+    const [windowName, idx, dead, cmd, paneId] = line.split("\t");
     return {
       windowName,
       paneIndex: parseInt(idx),
+      paneId: paneId ?? "",
       paneDead: dead === "1",
       currentCommand: cmd ?? "",
     };
@@ -160,6 +162,21 @@ export async function switchClient(targetSession: string): Promise<void> {
   if (!success) throw new Error(`tmux switch-client failed: ${stderr}`);
 }
 
+/** Swap two panes. Use fully-qualified targets (e.g. session:window.pane). */
+export async function swapPane(
+  source: string,
+  target: string,
+): Promise<void> {
+  const { success, stderr } = await run([
+    "swap-pane",
+    "-s",
+    source,
+    "-t",
+    target,
+  ]);
+  if (!success) throw new Error(`tmux swap-pane failed: ${stderr}`);
+}
+
 /** Display a message on the tmux status line. */
 export async function displayMessage(
   session: string,
@@ -191,6 +208,44 @@ export async function splitWindow(
   }
   const { success, stderr } = await run(args);
   if (!success) throw new Error(`tmux split-window failed: ${stderr}`);
+}
+
+/** Set a user option on a specific pane. */
+export async function setPaneOption(
+  target: string,
+  option: string,
+  value: string,
+): Promise<void> {
+  const { success, stderr } = await run([
+    "set-option",
+    "-p",
+    "-t",
+    target,
+    option,
+    value,
+  ]);
+  if (!success) throw new Error(`tmux set-option failed: ${stderr}`);
+}
+
+/** Find a pane's %N ID by its @jackops_role user option within a session. */
+export async function findPaneByRole(
+  session: string,
+  role: string,
+): Promise<string | null> {
+  const { success, stdout } = await run([
+    "list-panes",
+    "-s",
+    "-t",
+    session,
+    "-F",
+    "#{pane_id}\t#{@jackops_role}",
+  ]);
+  if (!success || !stdout) return null;
+  for (const line of stdout.split("\n")) {
+    const [paneId, paneRole] = line.split("\t");
+    if (paneRole === role) return paneId;
+  }
+  return null;
 }
 
 /** Rename the first window (index 0) created with the session. */

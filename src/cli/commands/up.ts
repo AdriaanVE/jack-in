@@ -81,25 +81,35 @@ export async function up(args: string[]): Promise<void> {
       Deno.exit(1);
     }
   } else if (stale.length > 0) {
-    console.log("Existing worktrees found from a previous run:");
-    for (const e of stale) {
-      const n = await worktree.dirtyCount(e.path);
-      const label = n > 0
-        ? `dirty - ${n} uncommitted change${n > 1 ? "s" : ""}`
-        : "clean";
-      console.log(`  ${e.path} (${label})`);
-    }
-    const answer = await prompt(
-      "\n[R]eset worktrees and continue, [A]bort to inspect? [r/A] ",
+    const dirtyCounts = await Promise.all(
+      stale.map(async (e) => ({
+        entry: e,
+        dirty: await worktree.dirtyCount(e.path),
+      })),
     );
-    if (answer !== "r") {
-      console.log("Aborted.");
-      Deno.exit(1);
+    const anyDirty = dirtyCounts.some((d) => d.dirty > 0);
+
+    if (anyDirty) {
+      console.log("Existing worktrees found from a previous run:");
+      for (const { entry, dirty } of dirtyCounts) {
+        console.log(`  ${entry.path} (${worktree.formatDirtyLabel(dirty)})`);
+      }
+      const answer = await prompt(
+        "\n[R]eset worktrees and continue, [A]bort to inspect? [R/a] ",
+      );
+      if (answer === "a") {
+        console.log("Aborted.");
+        Deno.exit(1);
+      }
+      for (const e of stale) {
+        await worktree.reset(e.path);
+      }
+      console.log("Worktrees reset.\n");
+    } else {
+      console.log(
+        `Reusing ${stale.length} clean worktrees from previous run.`,
+      );
     }
-    for (const e of stale) {
-      await worktree.reset(e.path);
-    }
-    console.log("Worktrees reset.\n");
   }
 
   console.log(
@@ -124,12 +134,17 @@ export async function up(args: string[]): Promise<void> {
 
   await tmux.createSession(session);
   await tmux.renameWindow(session, 0, "dashboard-orchestrator");
+  await tmux.setPaneOption(
+    `${session}:dashboard-orchestrator.0`,
+    "@jackops_role",
+    "dashboard",
+  );
 
   const reusable = new Map(
     stale.map((e) => [e.path.split("/").pop() ?? "", e.path]),
   );
 
-  const nonClaudeTargets: string[] = [];
+  const spawnTargets: string[] = [];
 
   for (const w of config.workers) {
     const dirName = worktree.worktreeDir(config.project, w.name);
@@ -159,6 +174,7 @@ export async function up(args: string[]): Promise<void> {
     }
 
     await tmux.createWindow(session, w.name);
+    await tmux.setPaneOption(`${session}:${w.name}.0`, "@jackops_role", w.name);
     const target = `${session}:${w.name}`;
     const spawnPrompt = workerInstructions
       ? [
@@ -168,30 +184,22 @@ export async function up(args: string[]): Promise<void> {
         "",
         `Your role: ${w.prompt}`,
         "",
-        "Read the project README and familiarize yourself with the codebase.",
-        "Do not start making changes yet. The daemon will assign you specific tasks.",
-        "Wait for task assignments.",
+        "Quickly read the README, then wait for task assignments from the daemon.",
       ].join("\n")
       : w.prompt;
     const cmd = spawnCommand(w.agent, spawnPrompt, config.startup_instructions);
     await tmux.sendKeys(target, `cd ${shellEscape(wt)} && ${cmd}`);
 
-    if (w.agent !== "claude") {
-      nonClaudeTargets.push(target);
-    }
+    spawnTargets.push(target);
 
     console.log(`  ${w.name} (${w.agent}) -> worktree: ${wt}`);
   }
 
-  if (nonClaudeTargets.length > 0) {
-    console.log(
-      "Waiting 3s to dismiss startup prompts for non-Claude agents...",
-    );
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+  if (spawnTargets.length > 0) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
     await Promise.all(
-      nonClaudeTargets.map((target) => tmux.sendKeys(target, "", true)),
+      spawnTargets.map((target) => tmux.sendKeys(target, "", true)),
     );
-    console.log("Startup prompts dismissed.");
   }
 
   if (config.tasks && config.tasks.length > 0) {
@@ -248,6 +256,11 @@ export async function up(args: string[]): Promise<void> {
     ].join("\n");
     await Deno.writeTextFile(promptPath, orchPrompt);
     await tmux.splitWindow(session, "dashboard-orchestrator", 70);
+    await tmux.setPaneOption(
+      `${session}:dashboard-orchestrator.1`,
+      "@jackops_role",
+      "orchestrator",
+    );
     const orchTarget = `${session}:dashboard-orchestrator.1`;
     const cmd = initCommand(orchAgentType, promptPath);
     await tmux.sendKeys(orchTarget, `cd ${shellEscape(base)} && ${cmd}`);
