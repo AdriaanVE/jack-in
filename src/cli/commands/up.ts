@@ -95,16 +95,19 @@ export async function up(args: string[]): Promise<void> {
         console.log(`  ${entry.path} (${worktree.formatDirtyLabel(dirty)})`);
       }
       const answer = await prompt(
-        "\n[R]eset worktrees and continue, [A]bort to inspect? [R/a] ",
+        "\n[C]ontinue with dirty worktrees, [R]eset worktrees, [A]bort? [c/r/A] ",
       );
-      if (answer === "a") {
+      if (answer === "r") {
+        for (const e of stale) {
+          await worktree.reset(e.path);
+        }
+        console.log("Worktrees reset.\n");
+      } else if (answer === "c") {
+        console.log("Continuing with dirty worktrees.\n");
+      } else {
         console.log("Aborted.");
         Deno.exit(1);
       }
-      for (const e of stale) {
-        await worktree.reset(e.path);
-      }
-      console.log("Worktrees reset.\n");
     } else {
       console.log(
         `Reusing ${stale.length} clean worktrees from previous run.`,
@@ -188,7 +191,7 @@ export async function up(args: string[]): Promise<void> {
       ].join("\n")
       : w.prompt;
     const cmd = spawnCommand(w.agent, spawnPrompt, config.startup_instructions);
-    await tmux.sendKeys(target, `cd ${shellEscape(wt)} && ${cmd}`);
+    await tmux.sendKeys(target, ` cd ${shellEscape(wt)} && ${cmd}`);
 
     spawnTargets.push(target);
 
@@ -215,7 +218,7 @@ export async function up(args: string[]): Promise<void> {
       console.log(`Daemon env written to ${envFile}`);
     }
     const target = `${session}:dashboard-orchestrator`;
-    await tmux.sendKeys(target, daemonCommand(opts.approval, envFile));
+    await tmux.sendKeys(target, ` ${daemonCommand(opts.approval, envFile)}`);
     console.log(
       `\nOrchestrator daemon started in dashboard-orchestrator pane.`,
     );
@@ -263,7 +266,7 @@ export async function up(args: string[]): Promise<void> {
     );
     const orchTarget = `${session}:dashboard-orchestrator.1`;
     const cmd = initCommand(orchAgentType, promptPath);
-    await tmux.sendKeys(orchTarget, `cd ${shellEscape(base)} && ${cmd}`);
+    await tmux.sendKeys(orchTarget, ` cd ${shellEscape(base)} && ${cmd}`);
     console.log(
       `Orchestrator agent (${orchAgentType}) started in dashboard-orchestrator pane.`,
     );

@@ -282,7 +282,7 @@ export async function init(opts: InitOpts): Promise<void> {
   const cmd = `cd ${shellEscape(base)} && ${
     initCommand(initAgent, promptFile)
   }`;
-  await tmux.sendKeys(target, cmd);
+  await tmux.sendKeys(target, ` ${cmd}`);
 
   console.log(`Attaching to session...\n`);
   await attachSession();

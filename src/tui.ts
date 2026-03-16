@@ -26,6 +26,17 @@ function cardTheme(base: number, focused: number, active: number) {
   return { base: make(base), focused: make(focused), active: make(active) };
 }
 
+/** Underline the first occurrence of `char` in the styled output. */
+function underlineChar(
+  styled: string,
+  char: string,
+): string {
+  const i = styled.indexOf(char);
+  if (i === -1) return styled;
+  return styled.slice(0, i) + `\x1b[4m${char}\x1b[24m` +
+    styled.slice(i + char.length);
+}
+
 const STATE_ICONS: Record<string, string> = {
   idle: "○",
   working: "●",
@@ -61,7 +72,7 @@ export function createDashboard(
 
   // --- Header ---
   const headerText = new Signal(
-    `JACKOPS -- ${ctx.session}  [${ctx.approval}]  arrows:select  enter:swap`,
+    `JACKOPS -- ${ctx.session}  [${ctx.approval}]  arrows:select  enter:swap  o:orch  c:cli`,
   );
   new Label({
     parent: tui,
@@ -166,7 +177,13 @@ export function createDashboard(
       overwriteRectangle: true,
       text: sig,
       align: { horizontal: "left", vertical: "top" },
-      theme: cardTheme(54, 55, 56),
+      theme: {
+        base: (t: string) => underlineChar(`\x1b[37;48;5;54m${t}\x1b[0m`, "o"),
+        focused: (t: string) =>
+          underlineChar(`\x1b[37;48;5;55m${t}\x1b[0m`, "o"),
+        active: (t: string) =>
+          underlineChar(`\x1b[1;37;48;5;56m${t}\x1b[0m`, "o"),
+      },
     });
     orchLabel.state = btn.state;
     orchLabel.style = new Computed(() => orchLabel.theme[btn.state.value]);
@@ -190,6 +207,31 @@ export function createDashboard(
     theme: { base: (t: string) => `\x1b[33m${t}\x1b[0m` },
   });
 
+  // --- CLI button (task counter row, right side) ---
+  const cliBtn = new Button({
+    parent: tui,
+    zIndex: 1,
+    rectangle: { column: 65, row: CARD_ROW + 4, width: 8, height: 1 },
+    theme: { base: (t: string) => t },
+  });
+  const cliTheme = {
+    base: (t: string) => underlineChar(`\x1b[37;48;5;24m${t}\x1b[0m`, "c"),
+    focused: (t: string) => underlineChar(`\x1b[37;48;5;31m${t}\x1b[0m`, "c"),
+    active: (t: string) => underlineChar(`\x1b[1;37;48;5;38m${t}\x1b[0m`, "c"),
+  };
+  const cliLabel = new Label({
+    parent: cliBtn,
+    zIndex: 2,
+    rectangle: cliBtn.rectangle as unknown as Signal<LabelRectangle>,
+    overwriteRectangle: true,
+    text: new Signal(" [cli] "),
+    align: { horizontal: "left", vertical: "top" },
+    theme: cliTheme,
+  });
+  cliLabel.state = cliBtn.state;
+  cliLabel.style = new Computed(() => cliLabel.theme[cliBtn.state.value]);
+  cliBtn.on("mousePress", () => openCli());
+
   // --- Down button (task counter row, right side) ---
   const downBtn = new Button({
     parent: tui,
@@ -198,9 +240,9 @@ export function createDashboard(
     theme: { base: (t: string) => t },
   });
   const downTheme = {
-    base: (t: string) => `\x1b[37;48;5;52m${t}\x1b[0m`,
-    focused: (t: string) => `\x1b[37;48;5;88m${t}\x1b[0m`,
-    active: (t: string) => `\x1b[1;37;48;5;124m${t}\x1b[0m`,
+    base: (t: string) => underlineChar(`\x1b[37;48;5;52m${t}\x1b[0m`, "d"),
+    focused: (t: string) => underlineChar(`\x1b[37;48;5;88m${t}\x1b[0m`, "d"),
+    active: (t: string) => underlineChar(`\x1b[1;37;48;5;124m${t}\x1b[0m`, "d"),
   };
   const downLabel = new Label({
     parent: downBtn,
@@ -229,7 +271,7 @@ export function createDashboard(
   // --- Tick: update all signals every 500ms ---
   function updateAll() {
     headerText.value =
-      `JACKOPS -- ${ctx.session}  [${ctx.approval}]  arrows:select  enter:swap`;
+      `JACKOPS -- ${ctx.session}  [${ctx.approval}]  arrows:select  enter:swap  o:orch  c:cli`;
 
     for (let i = 0; i < workerNames.length; i++) {
       cardSignals[i].value = cardText(
@@ -272,6 +314,16 @@ export function createDashboard(
       selectedWorker.value = Math.min(totalCards - 1, selectedWorker.value + 1);
       updateAll();
     }
+    if (event.key === "c") {
+      openCli();
+      return;
+    }
+    if (event.key === "o" && ctx.orchState) {
+      selectedWorker.value = workerNames.length;
+      showRole(ctx.session, "orchestrator");
+      updateAll();
+      return;
+    }
     if (event.key === "return") {
       const idx = selectedWorker.value;
       if (idx < workerNames.length) {
@@ -281,6 +333,21 @@ export function createDashboard(
       }
     }
   });
+
+  // --- CLI pane ---
+  async function ensureCliPane(session: string): Promise<void> {
+    const existing = await tmux.findPaneByRole(session, "cli");
+    if (existing) return;
+    await tmux.createWindow(session, "cli");
+    await tmux.setPaneOption(`${session}:cli.0`, "@jackops_role", "cli");
+    await tmux.selectWindow(session, "dashboard-orchestrator");
+  }
+
+  function openCli(): void {
+    ensureCliPane(ctx.session).then(() => showRole(ctx.session, "cli")).catch(
+      (e) => log.warn`[cli] failed: ${e instanceof Error ? e.message : e}`,
+    );
+  }
 
   // --- Swap logic ---
   let swapping = false;
