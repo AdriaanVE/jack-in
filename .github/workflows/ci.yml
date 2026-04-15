@@ -14,31 +14,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: denoland/setup-deno@v2
+      - uses: actions/setup-go@v5
         with:
-          deno-version: v2.x
-      - run: deno fmt --check
-      - run: deno lint
+          go-version: "1.25"
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
 
-  test-unit:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: denoland/setup-deno@v2
+      - uses: actions/setup-go@v5
         with:
-          deno-version: v2.x
-      - run: deno task test:unit
+          go-version: "1.25"
+      - run: go test ./... -count=1
 
-  test-integration:
+  build:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - uses: denoland/setup-deno@v2
+      - uses: actions/setup-go@v5
         with:
-          deno-version: v2.x
-      - run: sudo apt-get update && sudo apt-get install -y tmux
-      - run: |
-          git config --global user.email "ci@jackops"
-          git config --global user.name "CI"
-      - run: deno task test:integration
+          go-version: "1.25"
+      - run: go build ./...

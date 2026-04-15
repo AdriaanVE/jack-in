@@ -1,13 +1,12 @@
 #!/bin/bash
-# Claude Code PermissionRequest hook -- calls an LLM to evaluate safety.
+# Claude Code PermissionRequest hook; calls an LLM to evaluate safety.
 # Safe actions are auto-approved. Unsafe actions fall through to user prompt.
-#
-# TODO: make model configurable in jackops.yaml
-# TODO: support other API providers (OpenAI, Azure OpenAI, etc.)
 
 # Source credentials if env file exists (optional -- env vars may already be set)
-if [ -f "${JACKOPS_ENV_FILE:-$HOME/dotenvs/claude.env}" ]; then
-  source "${JACKOPS_ENV_FILE:-$HOME/dotenvs/claude.env}" >&2
+# Set JACKIN_ENV_FILE to point to your credentials file, or pre-export the
+# ANTHROPIC_FOUNDRY_RESOURCE and ANTHROPIC_FOUNDRY_API_KEY environment variables.
+if [ -n "${JACKIN_ENV_FILE}" ] && [ -f "${JACKIN_ENV_FILE}" ]; then
+  source "${JACKIN_ENV_FILE}" >&2
 fi
 
 INPUT=$(cat)

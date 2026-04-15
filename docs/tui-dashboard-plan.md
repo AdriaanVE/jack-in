@@ -5,13 +5,13 @@ Interactive terminal dashboard replacing the daemon's plain log output. Uses
 
 ## Current state
 
-- `jackops up` creates a tmux session with:
+- `jackin up` creates a tmux session with:
   - `dashboard-orchestrator` window: pane 0 = daemon logs, pane 1 = orchestrator
     agent
   - One hidden window per worker (e.g. `w1`, `w2`)
 - Daemon (`src/daemon.ts`) runs the poll loop, prints status via logger
 - `src/status.ts` already has `getStatus()` / `formatStatus()` for CLI
-  `jackops status`
+  `jackin status`
 
 ## Goal
 
@@ -175,7 +175,7 @@ Verify: TUI renders in a test terminal, worker cards clickable.
 In `src/cli/commands/up.ts`, the daemon pane currently runs:
 
 ```
-jackops daemon --approval <mode>
+jackin daemon --approval <mode>
 ```
 
 Change to launch a combined daemon+TUI process. Two options:
@@ -183,14 +183,14 @@ Change to launch a combined daemon+TUI process. Two options:
 **Option A (preferred)**: The daemon command itself renders the TUI when stdout
 is a TTY.
 
-- `jackops daemon` detects `Deno.stdin.isTerminal()` and creates the TUI
+- `jackin daemon` detects `Deno.stdin.isTerminal()` and creates the TUI
 - Non-TTY mode (piped logs) falls back to plain text — backward compatible
 
-**Option B**: New `jackops dashboard` command that wraps daemon + TUI.
+**Option B**: New `jackin dashboard` command that wraps daemon + TUI.
 
 Option A is simpler — no new command, no coordination between processes.
 
-Verify: `jackops up` shows TUI in top pane, worker panes swap on click.
+Verify: `jackin up` shows TUI in top pane, worker panes swap on click.
 
 ### Step 6: Pane swap mechanics
 
@@ -223,7 +223,7 @@ function pushLog(ctx: DaemonContext, line: string): void {
 }
 ```
 
-The existing `getJackopsLogger("daemon")` can be configured with a custom sink
+The existing `getJack-InLogger("daemon")` can be configured with a custom sink
 that writes to both the ring buffer (for TUI) and stderr (for file logging).
 
 Verify: logs appear in TUI log feed area.
@@ -247,7 +247,7 @@ Verify: logs appear in TUI log feed area.
    no visible race.
 
 3. **Mouse passthrough**: tmux needs `set -g mouse on` for mouse events to reach
-   the TUI. Document this as a requirement; `jackops up` can set it
+   the TUI. Document this as a requirement; `jackin up` can set it
    automatically via `tmux set-option`.
 
 ## Dependencies

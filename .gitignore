@@ -2,4 +2,19 @@ node_modules/
 .DS_Store
 *.log
 .env
-.jackops/daemon.env
+.jack-in/daemon.env
+
+# Go build output
+/bin/
+/jackin
+
+# jackin runtime
+.jack-in/
+.w-*/
+jack-in.yaml
+
+# Claude Code (keep commands/ and skills/ committed)
+.claude/settings.local.json
+.claude/projects/
+.claude/worktrees/
+.claude/MATRIX_EASTER_EGGS.md

@@ -1,21 +1,21 @@
 repos:
   - repo: local
     hooks:
-      - id: deno-fmt
-        name: deno fmt
-        entry: deno fmt --check
+      - id: go-fmt
+        name: gofmt
+        entry: bash -c 'test -z "$(gofmt -l .)"'
         language: system
-        types_or: [ts, json, markdown]
+        types: [go]
         pass_filenames: false
-      - id: deno-lint
-        name: deno lint
-        entry: deno lint
+      - id: go-vet
+        name: go vet
+        entry: go vet ./...
         language: system
-        types: [ts]
+        types: [go]
         pass_filenames: false
-      - id: deno-test-unit
-        name: deno test (unit)
-        entry: deno test --allow-read --allow-write test/agents_test.ts test/config_test.ts test/worktree_unit_test.ts test/status_test.ts
+      - id: go-test
+        name: go test
+        entry: go test ./...
         language: system
-        types: [ts]
+        types: [go]
         pass_filenames: false

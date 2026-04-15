@@ -5,56 +5,44 @@ commands.
 
 ## Key conventions
 
-- Imports use the deno.json import map (`@std/assert`, `@std/yaml`), not inline
-  `jsr:` specifiers
 - Agent spawn commands must work as tmux send-keys input (shell string, not
   argv)
 - Worker names and project names must match `/^[a-zA-Z0-9_-]+$/` (validated in
-  config.ts)
-- Worktree naming: `.w-<project>-<worker>`, branch: `jackops/<project>/<worker>`
+  config)
+- Worktree naming: `.w-<project>-<worker>`, branch: `jackin/<project>/<worker>`
 - Git worktree operations must be sequential (shared repo metadata, no parallel
   `git worktree add`)
-- `Deno.makeTempDir()` on macOS returns symlink paths (`/var/folders/...`), use
-  `Deno.realPath()` when comparing with git output
 
 ## File layout
 
 ```
-src/cli.ts          Entry point, subcommand dispatch (up/down/status/send/attach/tasks)
-src/config.ts       YAML config parser, validation
-src/agents.ts       Agent types, spawn commands, shell escaping
-src/tmux.ts         Typed tmux wrappers (session, window, pane operations)
-src/worktree.ts     Git worktree lifecycle (create, remove, list, cleanup)
-src/status.ts       Worker liveness detection via tmux pane state
-src/task-queue.ts   Filesystem-based task queue (JSON files in tasks/{pending,current,complete,rejected}/)
-src/subprocess.ts   Shared Deno.Command runner
-test/               Unit tests (*_test.ts), integration tests (*_integration_test.ts), e2e (e2e_test.ts)
+cmd/jackin/main.go       Entry point
+src/cmd/                 CLI commands (up, down, status, send, attach, tasks, init, etc.)
+src/cmd/embed/           Embedded instruction files (init, orchestrator, worker, skill)
+src/cmd/helpers.go       Shared CLI utilities (config loading, worker shell commands)
+src/config/              YAML config parser, validation, defaults
+src/daemon/              Orchestrator daemon (task assignment, watchdog, LLM eval, hooks)
+src/domain/              Shared types (AgentType, ApprovalMode, TaskState, WorkerRole)
+src/agent/               Agent type registry, spawn commands, shell escaping
+src/tmux/                Typed tmux wrappers (session, window, pane operations)
+src/worktree/            Git worktree lifecycle (create, remove, list, cleanup)
+src/taskqueue/           Filesystem-based task queue (JSON files in .jack-in/tasks/)
+src/ui/                  TUI dashboard (Bubble Tea)
+src/marker/              Task completion marker detection
+src/usage/               Claude Code token usage tracking
+src/quotes/              Startup quotes
+hooks/                   Claude Code hooks (stop, permission-eval, notify)
 ```
 
 ## Testing
 
-- Integration and e2e tests require tmux to be running
-- All integration tests use `try/finally` for cleanup (tmux sessions, temp
-  repos, worktrees)
-- Test setup helpers (`makeTempGitRepo`) validate git command success
-- `sanitizeResources: false` and `sanitizeOps: false` are set on integration
-  tests (subprocess resource leaks)
-
-## Shell alias
-
-A global alias exists in `~/.zshrc`:
-
 ```bash
-alias jackops="source ~/dotenvs/claude.env && deno run --allow-run --allow-read --allow-write --allow-env --allow-net ~/Code/agentic-coding/jackops/src/cli.ts"
+go test ./...            # Run all tests
+go test ./src/daemon/    # Run daemon tests only
 ```
 
-Manual testing from any directory (e.g. `~/Code/tmp`): `jackops tasks init`,
-`jackops tasks add "..."`, `jackops tasks`.
-
-## GitHub
-
-This repo is owned by `AdriaanVE`. If `gh` commands fail with repo access
-errors, run `gh auth switch --user AdriaanVE`.
+- Integration tests that require tmux are skipped when tmux is not available
+- Tests use `t.TempDir()` for isolated file operations
 
 ## Agent CLI flags
 

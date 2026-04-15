@@ -1,10 +1,10 @@
-# 5 cmux-Inspired Improvements for jackops
+# 5 cmux-Inspired Improvements for jackin
 
-Reference repo: `~/Code/agentic-coding/cmux/` -- a tmux-alternative terminal
+Reference: cmux (https://github.com/nichochar/cmux) -- a tmux-alternative terminal
 multiplexer with deep AI agent integration (Unix socket control plane, 7 Claude
 Code hooks, session store, rich notifications, per-workspace metadata).
 
-This plan proposes 5 improvements to jackops based on patterns observed in cmux.
+This plan proposes 5 improvements to jackin based on patterns observed in cmux.
 Recommended implementation order: 1 -> 2 -> 3 -> 4 -> 5.
 
 ---
@@ -13,12 +13,12 @@ Recommended implementation order: 1 -> 2 -> 3 -> 4 -> 5.
 
 ### Problem
 
-jackops uses only 2 of Claude Code's 21 hook events:
+jackin uses only 2 of Claude Code's 21 hook events:
 
 - **Stop**: transcript-aware completion marker detection
 - **PermissionRequest**: auto/yolo approval modes
 
-This means jackops has no idea when a worker is actively working, waiting for
+This means jackin has no idea when a worker is actively working, waiting for
 user input, about to execute a dangerous tool, or has been asked a question. The
 daemon relies on passive pane scraping with 60s/120s timeouts to detect these
 states.
@@ -36,8 +36,8 @@ desktop notification.
 Add hooks for:
 
 - **Notification** (idle_prompt, permission_prompt): write
-  `.jackops/signals/<worker>.needs-input`
-- **PreToolUse** (*): touch `.jackops/signals/<worker>.active` (heartbeat)
+  `.jack-in/signals/<worker>.needs-input`
+- **PreToolUse** (*): touch `.jack-in/signals/<worker>.active` (heartbeat)
 - **UserPromptSubmit**: clear needs-input, confirm worker is active
 - **PostToolUse** (*): update heartbeat timestamp
 - **SessionEnd**: detect worker crash/exit immediately
@@ -46,7 +46,7 @@ Daemon reads heartbeat freshness: if `.active` mtime < 30s, worker is definitely
 alive (skip Tier 2 entirely). Daemon reads needs-input signal: if set, escalate
 immediately instead of waiting 120s for Tier 3.
 
-Also introduce a **jackops-agent-shim** concept: a lightweight wrapper script
+Also introduce a **jackin-agent-shim** concept: a lightweight wrapper script
 that non-Claude agents can use to emit the same signal files, giving the daemon
 a unified interface regardless of agent type.
 
@@ -71,12 +71,12 @@ See: `docs/expanded-hooks-plan.md`
 
 ### Problem
 
-jackops tracks workers by tmux window name. If a window is renamed, reordered,
+jackin tracks workers by tmux window name. If a window is renamed, reordered,
 or if the daemon restarts, tracking breaks. Recovery requires re-scanning tmux
 state by name matching, which is fragile.
 
 The stop-hook receives worker name as a CLI argument, but there's no way for
-arbitrary scripts or the worker itself to know "who am I in the jackops swarm."
+arbitrary scripts or the worker itself to know "who am I in the jackin swarm."
 
 ### cmux inspiration
 
@@ -90,14 +90,14 @@ session IDs to workspace/surface pairs for cross-hook data sharing.
 On worker spawn, set environment variables via tmux:
 
 ```
-JACKOPS_WORKER_ID=<unique-id>
-JACKOPS_WORKER_NAME=<name>
-JACKOPS_PROJECT=<project-name>
-JACKOPS_SESSION=<tmux-session-name>
-JACKOPS_BASE=<project-root>
+JACK-IN_WORKER_ID=<unique-id>
+JACK-IN_WORKER_NAME=<name>
+JACK-IN_PROJECT=<project-name>
+JACK-IN_SESSION=<tmux-session-name>
+JACK-IN_BASE=<project-root>
 ```
 
-Write `.jackops/workers/<id>.json` metadata file per worker:
+Write `.jack-in/workers/<id>.json` metadata file per worker:
 
 ```json
 {
@@ -113,8 +113,8 @@ Write `.jackops/workers/<id>.json` metadata file per worker:
 }
 ```
 
-Hooks read `JACKOPS_WORKER_NAME` from env instead of CLI args. Daemon reconciles
-metadata files on restart. `jackops status` reads metadata for richer output.
+Hooks read `JACK-IN_WORKER_NAME` from env instead of CLI args. Daemon reconciles
+metadata files on restart. `jackin status` reads metadata for richer output.
 
 ### Impact
 
@@ -132,7 +132,7 @@ metadata file writes, hook arg simplification.
 
 ### Problem
 
-jackops polls pane content every 5s via `tmux capture-pane`. Completion marker
+jackin polls pane content every 5s via `tmux capture-pane`. Completion marker
 detection depends on the marker being visible in the last 50 lines of scrollback
 at poll time. If the agent outputs more than 50 lines after the marker, it's
 missed entirely.
@@ -152,12 +152,12 @@ continuous output stream from each pane, piped to a file or process.
 On worker spawn:
 
 ```bash
-tmux pipe-pane -t <target> -o 'cat >> .jackops/streams/<worker>.log'
+tmux pipe-pane -t <target> -o 'cat >> .jack-in/streams/<worker>.log'
 ```
 
 Daemon monitors stream files:
 
-- Use `Deno.watchFs()` on `.jackops/streams/` for file-change notifications
+- Use `Deno.watchFs()` on `.jack-in/streams/` for file-change notifications
 - On change, scan new bytes (track last-read offset) for completion marker
 - Detection drops from 60s polling to <5s (or near-instant with watchFs)
 
@@ -191,7 +191,7 @@ log rotation for long-running workers.
 
 ### Problem
 
-When jackops detects a stall, completion, or error, it shows a tmux
+When jackin detects a stall, completion, or error, it shows a tmux
 `display-message` that disappears after ~5 seconds. If the user is in another
 application (editor, browser), they miss it entirely. There's no sound, no
 badge, no persistent indicator.
@@ -218,11 +218,11 @@ Focus-aware suppression:
 # Check if user's active tmux window is the stalled worker
 ACTIVE_WINDOW=$(tmux display-message -p '#{window_name}')
 if [ "$ACTIVE_WINDOW" != "$WORKER_WINDOW" ]; then
-  osascript -e 'display notification "..." with title "jackops"'
+  osascript -e 'display notification "..." with title "jackin"'
 fi
 ```
 
-Configuration in `jackops.yaml`:
+Configuration in `jack-in.yaml`:
 
 ```yaml
 orchestrator:
@@ -247,7 +247,7 @@ for the "start swarm, go work on something else" workflow.
 
 ### Problem
 
-jackops worker health is binary: "pane is running a non-shell command" or not.
+jackin worker health is binary: "pane is running a non-shell command" or not.
 The status output shows `working`, `waiting`, `stopped`, or `gone` -- but these
 are point-in-time snapshots with no history or degradation tracking.
 
@@ -282,7 +282,7 @@ State transitions drive watchdog behavior instead of raw timers:
 - `stuck` -> escalate + desktop notification
 - `dead` -> mark task failed, notify user
 
-Display in `jackops status` with visual indicators:
+Display in `jackin status` with visual indicators:
 
 ```
 Workers:
@@ -293,7 +293,7 @@ Workers:
 
 Store health history for the orchestrator agent to review:
 
-- `.jackops/health/<worker>.json` with last 10 state transitions + timestamps
+- `.jack-in/health/<worker>.json` with last 10 state transitions + timestamps
 - Orchestrator can use this to decide whether to restart a chronically stuck
   worker
 

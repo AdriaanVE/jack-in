@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# jackops notify-hook -- emit signals from non-Claude agents.
-# Usage: .jackops/notify-hook.sh <event> [<signal_dir>] [<worker_name>]
+# jackin notify-hook -- emit signals from non-Claude agents.
+# Usage: .jack-in/notify-hook.sh <event> [<signal_dir>] [<worker_name>]
 #
 # Events:
 #   active      -- worker is actively working (heartbeat)
@@ -8,12 +8,12 @@
 #   needs-input -- worker is blocked on user input
 #   error       -- worker hit an error
 #
-# Reads JACKOPS_WORKER_NAME and JACKOPS_SIGNAL_DIR from environment,
+# Reads JACKIN_WORKER_NAME and JACKIN_SIGNAL_DIR from environment,
 # or falls back to positional args.
 
 EVENT="$1"
-SIGNAL_DIR="${JACKOPS_SIGNAL_DIR:-$2}"
-WORKER_NAME="${JACKOPS_WORKER_NAME:-$3}"
+SIGNAL_DIR="${JACKIN_SIGNAL_DIR:-$2}"
+WORKER_NAME="${JACKIN_WORKER_NAME:-$3}"
 
 if [ -z "$EVENT" ] || [ -z "$SIGNAL_DIR" ] || [ -z "$WORKER_NAME" ]; then
   echo "Usage: notify-hook.sh <event> [signal_dir] [worker_name]" >&2

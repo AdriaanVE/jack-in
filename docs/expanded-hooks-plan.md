@@ -2,7 +2,7 @@
 
 ## Summary
 
-Expand jackops from 2 Claude Code hooks (Stop, PermissionRequest) to 7 hooks,
+Expand jackin from 2 Claude Code hooks (Stop, PermissionRequest) to 7 hooks,
 and introduce a lightweight `notify-hook.sh` shim that non-Claude agents can
 call to emit the same signal files. This gives the daemon push-based, sub-second
 awareness of worker state instead of relying on 60s/120s polling timeouts.
@@ -13,16 +13,16 @@ awareness of worker state instead of relying on 60s/120s polling timeouts.
 
 | Event             | Hook Script                                            | Purpose                                                                                  |
 | ----------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
-| Stop              | `stop-hook.ts`                                         | Reads transcript, checks for `JACKOPS_TASK_COMPLETE:<id>` marker, touches `.done` signal |
+| Stop              | `stop-hook.ts`                                         | Reads transcript, checks for `JACKIN_TASK_COMPLETE:<id>` marker, touches `.done` signal |
 | PermissionRequest | `permission-eval.sh` (auto) / `yolo-approve.sh` (yolo) | Auto-approve or blind-approve permission prompts                                         |
 
 ### Signal files today
 
 | File                             | Written by                        | Read by      | Meaning                               |
 | -------------------------------- | --------------------------------- | ------------ | ------------------------------------- |
-| `.jackops/signals/<worker>.done` | stop-hook.ts / daemon marker scan | daemon tick  | Worker finished its task              |
-| `.jackops/current-task/<worker>` | daemon on assignment              | stop-hook.ts | Current task ID for marker validation |
-| `.jackops/approval-mode`         | `jackops approval` CLI            | daemon tick  | Runtime approval mode override        |
+| `.jack-in/signals/<worker>.done` | stop-hook.ts / daemon marker scan | daemon tick  | Worker finished its task              |
+| `.jack-in/current-task/<worker>` | daemon on assignment              | stop-hook.ts | Current task ID for marker validation |
+| `.jack-in/approval-mode`         | `jackin approval` CLI            | daemon tick  | Runtime approval mode override        |
 
 ### Pain points addressed
 
@@ -59,7 +59,7 @@ to the user.
 **What it does**: Writes a needs-input signal file so the daemon knows instantly
 that the worker is blocked and needs human attention.
 
-**Signal file**: `.jackops/signals/<worker>.needs-input`
+**Signal file**: `.jack-in/signals/<worker>.needs-input`
 
 **Hook script**: `hooks/notification-hook.sh`
 
@@ -101,7 +101,7 @@ in <1s instead of 60s.
 **What it does**: Touches a heartbeat file so the daemon knows the worker is
 actively running tools. This is a lightweight "I'm alive" signal.
 
-**Signal file**: `.jackops/signals/<worker>.heartbeat`
+**Signal file**: `.jack-in/signals/<worker>.heartbeat`
 
 **Hook script**: `hooks/heartbeat-hook.sh`
 
@@ -188,7 +188,7 @@ reason).
 **What it does**: Writes a `.exited` signal so the daemon knows the worker
 process is gone. Includes the exit reason for diagnostics.
 
-**Signal file**: `.jackops/signals/<worker>.exited`
+**Signal file**: `.jack-in/signals/<worker>.exited`
 
 **Hook script**: `hooks/session-end-hook.sh`
 
@@ -239,14 +239,14 @@ completion detection but nothing for heartbeats, needs-input, or crash signals.
 ### Solution: `notify-hook.sh`
 
 A simple script that non-Claude agents can call from their terminal to emit
-jackops signals. It's included in the task prompt as an available command.
+jackin signals. It's included in the task prompt as an available command.
 
 **Script**: `hooks/notify-hook.sh`
 
 ```bash
 #!/usr/bin/env bash
-# jackops notify-hook -- emit signals from non-Claude agents.
-# Usage: .jackops/notify-hook.sh <event> [<data>]
+# jackin notify-hook -- emit signals from non-Claude agents.
+# Usage: .jack-in/notify-hook.sh <event> [<data>]
 #
 # Events:
 #   active      -- worker is actively working (heartbeat)
@@ -254,12 +254,12 @@ jackops signals. It's included in the task prompt as an available command.
 #   needs-input -- worker is blocked on user input
 #   error       -- worker hit an error
 #
-# Reads JACKOPS_WORKER_NAME and JACKOPS_SIGNAL_DIR from environment,
+# Reads JACK-IN_WORKER_NAME and JACK-IN_SIGNAL_DIR from environment,
 # or falls back to args: notify-hook.sh <event> <signal_dir> <worker_name>
 
 EVENT="$1"
-SIGNAL_DIR="${JACKOPS_SIGNAL_DIR:-$2}"
-WORKER_NAME="${JACKOPS_WORKER_NAME:-$3}"
+SIGNAL_DIR="${JACK-IN_SIGNAL_DIR:-$2}"
+WORKER_NAME="${JACK-IN_WORKER_NAME:-$3}"
 
 if [ -z "$EVENT" ] || [ -z "$SIGNAL_DIR" ] || [ -z "$WORKER_NAME" ]; then
   echo "Usage: notify-hook.sh <event> [signal_dir] [worker_name]" >&2
@@ -291,18 +291,18 @@ esac
 Update `formatTaskPrompt()` for non-Claude agents to include shim instructions:
 
 ```
-IMPORTANT: When you are completely done with this task, run: .jackops/notify-hook.sh done
-Also output exactly this on its own line: JACKOPS_TASK_COMPLETE:<taskId>
+IMPORTANT: When you are completely done with this task, run: .jack-in/notify-hook.sh done
+Also output exactly this on its own line: JACKIN_TASK_COMPLETE:<taskId>
 
-Tip: If you encounter an error you can't resolve, run: .jackops/notify-hook.sh error "description"
+Tip: If you encounter an error you can't resolve, run: .jack-in/notify-hook.sh error "description"
 ```
 
 ### Environment variables for shim
 
 Set via `tmux set-environment` on worker spawn:
 
-- `JACKOPS_SIGNAL_DIR` = absolute path to `.jackops/signals/`
-- `JACKOPS_WORKER_NAME` = worker name
+- `JACK-IN_SIGNAL_DIR` = absolute path to `.jack-in/signals/`
+- `JACK-IN_WORKER_NAME` = worker name
 
 This lets the shim work without positional args when called from within the tmux
 pane.
@@ -410,12 +410,12 @@ export function buildClaudeSettings(
   workerName: string,
   approval: ApprovalMode = "manual",
 ) {
-  const jackopsDir = join(base, ".jackops");
+  const jackinDir = join(base, ".jack-in");
   const signalDir = join(base, SIGNAL_DIR);
   const currentTaskDir = join(base, CURRENT_TASK_DIR);
 
   // Existing hooks
-  const stopHook = join(jackopsDir, "stop-hook.ts");
+  const stopHook = join(jackinDir, "stop-hook.ts");
   const hooks: Record<string, any[]> = {
     Stop: [{
       matcher: "*",
@@ -429,7 +429,7 @@ export function buildClaudeSettings(
   };
 
   // NEW: Notification hook (always active)
-  const notificationHook = join(jackopsDir, "notification-hook.sh");
+  const notificationHook = join(jackinDir, "notification-hook.sh");
   hooks.Notification = [
     {
       matcher: "idle_prompt",
@@ -461,7 +461,7 @@ export function buildClaudeSettings(
   ];
 
   // NEW: PreToolUse heartbeat (always active)
-  const heartbeatHook = join(jackopsDir, "heartbeat-hook.sh");
+  const heartbeatHook = join(jackinDir, "heartbeat-hook.sh");
   hooks.PreToolUse = [{
     matcher: "*",
     hooks: [{
@@ -480,7 +480,7 @@ export function buildClaudeSettings(
   }];
 
   // NEW: UserPromptSubmit (always active)
-  const promptHook = join(jackopsDir, "prompt-hook.sh");
+  const promptHook = join(jackinDir, "prompt-hook.sh");
   hooks.UserPromptSubmit = [{
     matcher: "*", // Note: UserPromptSubmit has no matchers per the docs
     hooks: [{
@@ -490,7 +490,7 @@ export function buildClaudeSettings(
   }];
 
   // NEW: SessionEnd crash detection (always active)
-  const sessionEndHook = join(jackopsDir, "session-end-hook.sh");
+  const sessionEndHook = join(jackinDir, "session-end-hook.sh");
   hooks.SessionEnd = [{
     matcher: "*",
     hooks: [{
@@ -506,7 +506,7 @@ export function buildClaudeSettings(
     // ... existing yolo-approve.sh config
   }
 
-  return { permissions: { allow: ["Bash(jackops *)"] }, hooks };
+  return { permissions: { allow: ["Bash(jackin *)"] }, hooks };
 }
 ```
 
@@ -530,7 +530,7 @@ for (
   ]
 ) {
   const src = join(repoRoot, "hooks", name);
-  const dst = join(jackopsDir, name);
+  const dst = join(jackinDir, name);
   await Deno.copyFile(src, dst);
   await Deno.chmod(dst, 0o755);
 }
@@ -538,8 +538,8 @@ for (
 
 ### Modified mergeClaudeSettings()
 
-The existing merge logic identifies jackops hooks by checking if the command
-contains `.jackops/`. This naturally handles the new hooks -- they'll be added
+The existing merge logic identifies jackin hooks by checking if the command
+contains `.jack-in/`. This naturally handles the new hooks -- they'll be added
 alongside existing ones and cleaned up when approval mode changes.
 
 However, the new hooks (Notification, PreToolUse, PostToolUse, UserPromptSubmit,
@@ -662,7 +662,7 @@ Update `formatTaskPrompt()` in daemon.ts for non-Claude agents:
 ```typescript
 } else {
   // Non-Claude agents: use notify-hook shim + marker for daemon-side scan
-  const shim = join(base, ".jackops", "notify-hook.sh");
+  const shim = join(base, ".jack-in", "notify-hook.sh");
   const marker = completionMarker(task.id);
   lines.push("");
   lines.push(
@@ -677,7 +677,7 @@ Update `formatTaskPrompt()` in daemon.ts for non-Claude agents:
 Optionally, if env vars are set (via improvement 2 -- worker identity):
 
 ```
-IMPORTANT: When you are completely done with this task, run: .jackops/notify-hook.sh done
+IMPORTANT: When you are completely done with this task, run: .jack-in/notify-hook.sh done
 ```
 
 ---
@@ -688,8 +688,8 @@ Set via tmux before spawning the agent:
 
 ```typescript
 // In worker spawn code:
-await tmux.sendKeys(target, `export JACKOPS_SIGNAL_DIR='${signalDir}'`);
-await tmux.sendKeys(target, `export JACKOPS_WORKER_NAME='${workerName}'`);
+await tmux.sendKeys(target, `export JACK-IN_SIGNAL_DIR='${signalDir}'`);
+await tmux.sendKeys(target, `export JACK-IN_WORKER_NAME='${workerName}'`);
 // Then spawn the agent
 await tmux.sendKeys(target, spawnCommand(agent, prompt, startup));
 ```
@@ -722,9 +722,9 @@ This enables the shim to work without positional args.
 
 ### Manual smoke test
 
-1. Start jackops swarm with 1 Claude worker
+1. Start jackin swarm with 1 Claude worker
 2. Assign a task that requires file edits (triggers PreToolUse)
-3. Verify `.heartbeat` file is being updated (ls -la .jackops/signals/)
+3. Verify `.heartbeat` file is being updated (ls -la .jack-in/signals/)
 4. Ask Claude a question that triggers AskUserQuestion -> verify `.needs-input`
    appears
 5. Answer the question -> verify `.needs-input` is cleared

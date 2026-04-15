@@ -1,0 +1,47 @@
+version: 2
+
+project_name: jackin
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - main: ./cmd/jackin
+    binary: jackin
+    ldflags:
+      - -s -w
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  disable: true
+
+# Using brews (not homebrew_casks) because this is a CLI binary, not a macOS
+# .app bundle. homebrew_casks generates a cask block which breaks for formulas.
+brews:
+  - repository:
+      owner: AdriaanVE
+      name: homebrew-tap
+      token: "{{ .Env.GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/AdriaanVE/jack-in
+    description: "tmux-native multi-agent swarm orchestrator"
+    license: MIT
+    dependencies:
+      - name: tmux
+    test: |
+      assert_match "jackin", shell_output("#{bin}/jackin --help")
