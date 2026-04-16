@@ -146,7 +146,7 @@ func initBareRemote(t *testing.T) string {
 
 	repo := filepath.Join(t.TempDir(), "repo")
 	os.MkdirAll(repo, 0o755)
-	run(t, repo, "git", "init")
+	run(t, repo, "git", "init", "-b", "main")
 	run(t, repo, "git", "remote", "add", "origin", bare)
 	run(t, repo, "git", "config", "user.email", "test@test.com")
 	run(t, repo, "git", "config", "user.name", "test")
