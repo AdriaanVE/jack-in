@@ -904,7 +904,7 @@ func (m Model) taskBarSegmentAtPosition(x, y int) domain.TaskState {
 	// Task bar Y = app padding top (1) + header (1) + card rows * 6 (5 card + 1 margin)
 	cardRows := (len(m.cards) + cardsPerRow - 1) / cardsPerRow
 	taskBarY := 1 + 1 + cardRows*6
-	if y != taskBarY {
+	if y < taskBarY-1 || y > taskBarY+1 {
 		return ""
 	}
 
