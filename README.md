@@ -26,6 +26,10 @@ remote control via ngrok, all from the terminal.
 > [Oh My Claude Code](https://github.com/yeachan-heo/oh-my-claudecode)), which
 > may supersede this tool. Use at your own discretion.
 
+> **Agent support:** Primarily built around Claude Code. Codex, Opencode, and
+> Gemini work as workers, but some features (live approval mode switching, auto
+> mode LLM evaluation, Claude Code hooks) are Claude-specific.
+
 ## Why
 
 I wanted a way to run multiple AI agents in parallel without losing visibility.
@@ -50,6 +54,9 @@ go install github.com/AdriaanVE/jack-in/cmd/jackin@latest
 git clone https://github.com/AdriaanVE/jack-in.git
 cd jack-in && go build -o jackin ./cmd/jackin
 ```
+
+If you use `auto` approval mode with the Anthropic API (not as a logged-in
+Claude user), see [API Credentials](#api-credentials) for setup.
 
 Then, in any git repo:
 
@@ -100,6 +107,30 @@ tasks:
 ```
 
 See [Configuration Reference](#configuration-reference) for all options.
+
+## API Credentials
+
+You do **not** need API credentials to run jackin. The agent CLIs (claude,
+codex, etc.) use their own authentication, and `auto` approval mode falls back
+to headless Claude (`claude --print`) when no API key is set.
+
+API credentials give you faster, more reliable LLM evaluations in `auto` mode.
+This only applies if you use the Anthropic API directly, not if you're logged in
+to Claude Code as a regular user.
+
+```bash
+# Option 1: Anthropic API key
+export ANTHROPIC_API_KEY=sk-...
+
+# Option 2: Azure Foundry
+export ANTHROPIC_FOUNDRY_RESOURCE=your-resource
+export ANTHROPIC_FOUNDRY_API_KEY=your-key
+
+# Option 3: point to a credentials file (daemon sources it automatically)
+export JACKIN_ENV_FILE=~/dotenvs/claude.env
+```
+
+The daemon inherits environment variables from the shell that runs `jackin up`.
 
 ## Commands
 
@@ -181,21 +212,7 @@ The LLM backend priority:
 2. **Azure Foundry** - if `ANTHROPIC_FOUNDRY_RESOURCE` and `ANTHROPIC_FOUNDRY_API_KEY` are set
 3. **Headless Claude** - fallback using `claude --print -p <prompt>`
 
-The daemon inherits environment variables from the shell that runs `jackin up`.
-If your API credentials live in a dotenv file, you can either source it before
-starting the swarm or point `JACKIN_ENV_FILE` at it:
-
-```bash
-# Option 1: export vars in your shell
-export ANTHROPIC_API_KEY=sk-...
-
-# Option 2: point to a credentials file
-export JACKIN_ENV_FILE=~/dotenvs/claude.env
-```
-
-The daemon and permission hooks will source `JACKIN_ENV_FILE` automatically.
-Without valid credentials, auto mode falls back to headless Claude, which
-requires the `claude` CLI to be authenticated.
+See [API Credentials](#api-credentials) for setup.
 
 The evaluation determines:
 - **Status**: working, waiting for approval, waiting for input, error, or done
