@@ -16,6 +16,12 @@ func TestClaudeProjectPath(t *testing.T) {
 	if !contains(path, "Users-test-project") {
 		t.Errorf("expected encoded path in %q", path)
 	}
+
+	// Underscores should be replaced with hyphens (matches Claude's encoding)
+	path = claudeProjectPath("/Users/test/original_repos/my_project")
+	if !contains(path, "original-repos-my-project") {
+		t.Errorf("expected underscores replaced with hyphens in %q", path)
+	}
 }
 
 func TestParseJSONLFile_NotExists(t *testing.T) {

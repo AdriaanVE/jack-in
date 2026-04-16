@@ -142,10 +142,11 @@ func claudeProjectPath(fsPath string) string {
 		return ""
 	}
 
-	// Claude encodes paths by replacing / and . with -
+	// Claude encodes paths by replacing /, . and _ with -
 	// The leading slash becomes a leading dash (kept, not stripped)
 	encoded := strings.ReplaceAll(absPath, "/", "-")
 	encoded = strings.ReplaceAll(encoded, ".", "-")
+	encoded = strings.ReplaceAll(encoded, "_", "-")
 
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
