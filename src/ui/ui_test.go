@@ -51,7 +51,10 @@ func TestTaskBarSegmentAtPosition(t *testing.T) {
 		{"review segment", segStartX + 2*segW + 1, taskBarY, domain.StateReview},
 		{"complete segment", segStartX + 3*segW + 1, taskBarY, domain.StateComplete},
 		{"rejected segment", segStartX + 4*segW + 1, taskBarY, domain.StateRejected},
-		{"wrong Y", segStartX + 1, taskBarY + 1, ""},
+		{"one row above", segStartX + 1, taskBarY - 1, domain.StatePending},
+		{"one row below", segStartX + 1, taskBarY + 1, domain.StatePending},
+		{"two rows above misses", segStartX + 1, taskBarY - 2, ""},
+		{"two rows below misses", segStartX + 1, taskBarY + 2, ""},
 		{"before prefix", 2, taskBarY, ""},
 		{"negative X", -1, taskBarY, ""},
 	}
