@@ -178,8 +178,24 @@ LLM for safety evaluation.
 
 The LLM backend priority:
 1. **Anthropic API** - if `ANTHROPIC_API_KEY` is set
-2. **Azure Foundry** - if `ANTHROPIC_FOUNDRY_RESOURCE` is set
+2. **Azure Foundry** - if `ANTHROPIC_FOUNDRY_RESOURCE` and `ANTHROPIC_FOUNDRY_API_KEY` are set
 3. **Headless Claude** - fallback using `claude --print -p <prompt>`
+
+The daemon inherits environment variables from the shell that runs `jackin up`.
+If your API credentials live in a dotenv file, you can either source it before
+starting the swarm or point `JACKIN_ENV_FILE` at it:
+
+```bash
+# Option 1: export vars in your shell
+export ANTHROPIC_API_KEY=sk-...
+
+# Option 2: point to a credentials file
+export JACKIN_ENV_FILE=~/dotenvs/claude.env
+```
+
+The daemon and permission hooks will source `JACKIN_ENV_FILE` automatically.
+Without valid credentials, auto mode falls back to headless Claude, which
+requires the `claude` CLI to be authenticated.
 
 The evaluation determines:
 - **Status**: working, waiting for approval, waiting for input, error, or done
