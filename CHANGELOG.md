@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.1] - 2026-04-16
+
+### Fixed
+
+- Task bar clickable area expanded from 1 to 3 rows for easier mouse interaction
+- Token usage tracking for projects with underscores in their path (Claude encodes `_` as `-`)
+- Worktree tests failing on CI due to `git init` defaulting to `master` branch on Ubuntu
+- Homebrew install instructions added to README
+- Stale instruction file duplicates removed from `docs/` (canonical copies live in `src/cmd/embed/`)
+- Moved internal docs (`ARCHITECTURE.md`, `TODO.md`, etc.) into `docs/` directory
+
 ## [0.1.0] - 2026-04-16
 
 Initial public release.
